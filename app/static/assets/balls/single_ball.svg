@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g transform="translate(50 50) scale(1.5833333333333333)">
+<circle r="24" fill="#f1ca34" stroke="#17314e" stroke-width="2.5"/>
+<path d="M-22-7 Q-3-20 12-18 Q6-5 19 10 Q4 16-7 22 Q-11 6-22-7Z" fill="#165fa1"/>
+<path d="M12-18 Q22-9 23 3 Q7 0-3-11 Q4-17 12-18Z" fill="#f7e46d"/>
+<path d="M19 10 Q12 22-2 23 Q-4 8 8-2 Q15 4 19 10Z" fill="#1a70ba"/>
+<path d="M-22-7 Q-3-20 12-18 M12-18 Q22-9 23 3 M23 3 Q12 22-2 23 M-2 23 Q-16 17-22-7" fill="none" stroke="#fff" stroke-width="2"/>
+<ellipse cx="-7" cy="-10" rx="7" ry="4" fill="#fff" opacity=".28"/></g></svg>

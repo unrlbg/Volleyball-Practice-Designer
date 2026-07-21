@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Volleyball Practice Designer</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/improvements.css">
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+  <header class="topbar">
+    <button class="brand" data-view="dashboard" aria-label="Dashboard">
+      <span class="brand-mark">VPD</span>
+      <span><b>Volleyball</b><small>Practice Designer</small></span>
+    </button>
+    <nav id="main-nav">
+      <button data-view="dashboard">Dashboard</button>
+      <button data-view="practices">My Practices</button>
+      <button data-view="editor" class="active">Court Editor</button>
+      <button data-view="library">Drill Library</button>
+      <button data-view="assets">Asset Library</button>
+    </nav>
+    <div class="top-actions">
+      <span id="save-state">Ready</span>
+      <button class="btn ghost" id="new-drill">New</button>
+      <button class="btn primary" id="save-drill">Save drill</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="view-editor" class="view active">
+      <div class="editor-shell">
+        <aside class="left-panel panel">
+          <div class="panel-head"><b>Build the drill</b><small>Click an item to add it</small></div>
+          <div id="palette"></div>
+        </aside>
+
+        <section class="workspace">
+          <div class="editor-toolbar">
+            <div>
+              <button class="tool-btn" id="undo" title="Undo (Ctrl+Z)">↶</button>
+              <button class="tool-btn" id="redo" title="Redo (Ctrl+Y)">↷</button>
+              <span class="divider"></span>
+              <button class="tool-btn" id="zoom-out">−</button>
+              <span id="zoom-label">100%</span>
+              <button class="tool-btn" id="zoom-in">+</button>
+              <button class="tool-btn wide" id="fit-view">Fit All Courts</button>
+              <button class="tool-btn wide" id="reset-view">Reset</button>
+            </div>
+            <div>
+              <button class="tool-btn wide" id="drill-info-btn">Drill info</button>
+              <select id="export-mode" class="toolbar-select" aria-label="PNG export mode">
+                <option value="selected">Selected court</option>
+                <option value="all" selected>All courts</option>
+                <option value="viewport">Current viewport</option>
+                <option value="workspace">Full workspace</option>
+              </select>
+              <button class="tool-btn wide" id="export-png">Export PNG</button>
+              <select id="print-mode" class="toolbar-select" aria-label="Print mode">
+                <option value="per-court">One court per page</option>
+                <option value="all" selected>All courts landscape</option>
+                <option value="multi-page">Multi-page courts</option>
+              </select>
+              <button class="tool-btn wide" id="print-drill">Print</button>
+            </div>
+          </div>
+          <div class="court-toolbar" aria-label="Court controls">
+            <button id="add-court">Add Court</button>
+            <button id="duplicate-court">Duplicate Court Only</button>
+            <button id="duplicate-court-contents">Duplicate Court With Contents</button>
+            <button id="delete-court">Delete Court</button>
+            <button id="lock-court">Lock Court</button>
+            <select id="court-template" aria-label="Court layout template">
+              <option value="single">Single Court</option>
+              <option value="horizontal2">Two Courts Horizontal</option>
+              <option value="vertical2">Two Courts Vertical</option>
+              <option value="horizontal3">Three Courts Horizontal</option>
+              <option value="twoPlusOne">Three Courts 2+1</option>
+              <option value="stations">Skill Stations</option>
+            </select>
+            <button id="arrange-courts">Arrange Courts</button>
+          </div>
+          <div id="canvas-wrap" tabindex="0">
+            <svg id="court-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2600 1800" aria-label="Editable multi-court volleyball workspace">
+              <defs>
+                <pattern id="grid-pattern" width="40" height="40" patternUnits="userSpaceOnUse">
+                  <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="1"/>
+                </pattern>
+                <linearGradient id="court-surface-light" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#f4b37b"/>
+                  <stop offset=".55" stop-color="#e99358"/>
+                  <stop offset="1" stop-color="#d77d45"/>
+                </linearGradient>
+                <linearGradient id="court-free-light" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#2f706a"/>
+                  <stop offset="1" stop-color="#174f4c"/>
+                </linearGradient>
+                <pattern id="net-mesh" width="12" height="12" patternUnits="userSpaceOnUse">
+                  <path d="M0 0H12V12H0Z" fill="none" stroke="#f7faf7" stroke-opacity=".75" stroke-width="1"/>
+                </pattern>
+                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                  <path d="M0 0L10 3.5L0 7Z" fill="context-stroke"/>
+                </marker>
+                <filter id="shadow"><feDropShadow dx="0" dy="4" stdDeviation="5" flood-opacity=".18"/></filter>
+              </defs>
+              <g id="viewport">
+                <g id="court-layer"></g>
+                <g id="objects-layer"></g>
+                <g id="selection-layer"></g>
+              </g>
+            </svg>
+            <div class="canvas-hint">Drag to move · Shift-click to multi-select · mouse wheel to zoom</div>
+          </div>
+          <div class="frames-panel">
+            <div class="frame-controls">
+              <button id="prev-frame">‹</button><b>Drill frames</b><button id="next-frame">›</button>
+              <span id="frame-position"></span>
+              <input id="frame-name" aria-label="Current frame name" maxlength="80">
+              <div class="frame-actions">
+                <button id="duplicate-frame" title="Duplicate current frame">Duplicate</button>
+                <button id="rename-frame" title="Apply current frame name">Apply name</button>
+                <button id="move-frame-left" title="Move current frame left">Left</button>
+                <button id="move-frame-right" title="Move current frame right">Right</button>
+                <button id="delete-frame" title="Delete current frame">Delete</button>
+              </div>
+            </div>
+            <div id="frames-strip"></div>
+            <button class="add-frame" id="add-frame">＋ Add frame</button>
+          </div>
+        </section>
+
+        <aside class="right-panel panel">
+          <div class="panel-head"><b>Properties</b><small id="selection-summary">Nothing selected</small></div>
+          <div id="properties-empty" class="empty-state">
+            <span>◇</span><p>Select an object on the court to edit its properties.</p>
+          </div>
+          <form id="properties" class="hidden">
+            <label>Object type<input id="prop-type" readonly></label>
+            <div class="two-col">
+              <label>Team<select id="prop-team"><option>A</option><option>B</option><option>Neutral</option></select></label>
+              <label>Role<select id="prop-role"></select></label>
+            </div>
+            <div id="player-options">
+              <label>Pose<select id="prop-pose"></select></label>
+              <label>Facing direction<select id="prop-facing"><option>Right</option><option>Left</option></select></label>
+            </div>
+            <div id="variant-picker" class="variant-picker"></div>
+            <label id="object-court-label">Assigned court<select id="prop-court"></select></label>
+            <fieldset id="court-object-properties" class="court-object-properties hidden">
+              <legend>Court object</legend>
+              <label>Court name<input id="prop-court-name" maxlength="80"></label>
+              <div class="two-col">
+                <label>Style<select id="prop-court-style"><option value="competition">Competition</option><option value="blue">Blue</option><option value="light">Light training</option></select></label>
+                <label>Width<input id="prop-court-width" type="number" min="320" max="1400" step="10"></label>
+              </div>
+              <div class="court-rotation-actions">
+                <button type="button" id="rotate-court-left">↶ Left 90°</button>
+                <button type="button" id="rotate-court-right">↷ Right 90°</button>
+                <button type="button" id="reset-court-rotation">Reset rotation</button>
+              </div>
+              <label class="check"><input id="rotate-court-contents" type="checkbox"> Rotate court contents with court</label>
+              <label class="check"><input id="keep-players-upright" type="checkbox" checked> Keep player figures upright</label>
+            </fieldset>
+            <label id="prop-text-label" class="hidden">Text<input id="prop-text" maxlength="240"></label>
+            <div class="two-col">
+              <label>Position X<input id="prop-x" type="number" step="1"></label>
+              <label>Position Y<input id="prop-y" type="number" step="1"></label>
+            </div>
+            <div class="two-col">
+              <label>Width<input id="prop-width" type="number" min="12" max="1400" step="1"></label>
+              <label>Height<input id="prop-height" type="number" min="12" max="900" step="1"></label>
+            </div>
+            <label class="check" id="aspect-lock-label"><input id="prop-aspect-lock" type="checkbox" checked> Lock aspect ratio</label>
+            <div class="two-col">
+              <label>Rotation (degrees)<input id="prop-rotation" type="number" min="0" max="359" step="1"></label>
+              <label>Scale<input id="prop-scale" type="number" min=".25" max="4" step=".05"></label>
+            </div>
+            <label>Opacity<input id="prop-opacity" type="range" min=".1" max="1" step=".05"></label>
+            <label>Color<input id="prop-color" type="color"></label>
+            <label class="check" id="show-shadow-label"><input id="show-shadow" type="checkbox"> Show shadow</label>
+            <div class="property-actions">
+              <button type="button" id="flip-horizontal">⇋ Flip horizontal</button>
+              <button type="button" id="flip-vertical">⇅ Flip vertical</button>
+              <button type="button" id="reset-size">Reset size</button>
+              <button type="button" id="lock">⌾ Lock</button>
+              <button type="button" id="bring-front">↑ Front</button>
+              <button type="button" id="send-back">↓ Back</button>
+              <button type="button" id="duplicate">⧉ Duplicate</button>
+              <button type="button" id="delete-object" class="danger">⌫ Delete</button>
+            </div>
+          </form>
+          <div class="court-settings">
+            <h3>Court settings</h3>
+            <label class="check"><input id="show-attack" type="checkbox" checked> Attack lines</label>
+            <label class="check"><input id="show-zones" type="checkbox" checked> Zone labels</label>
+            <label class="check"><input id="show-grid" type="checkbox"> Court grid</label>
+            <label class="check"><input id="show-antennas" type="checkbox" checked> Antennas</label>
+            <label class="check"><input id="show-net" type="checkbox" checked> Net</label>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="view-dashboard" class="view page">
+      <div class="page-heading"><div><p class="eyebrow">Plan with clarity</p><h1>Good practice starts on the board.</h1><p>Build drills visually, organize them into complete sessions, and walk into the gym prepared.</p></div><button class="btn primary large" data-view="editor">Create a drill →</button></div>
+      <div class="stats"><article><span id="stat-drills">0</span><small>Saved drills</small></article><article><span id="stat-practices">0</span><small>Practices</small></article><article><span id="stat-frames">0</span><small>Visual frames</small></article></div>
+      <div class="dashboard-grid"><article class="feature-card"><span>◎</span><h2>Court Editor</h2><p>Place players, equipment and movement paths on a regulation indoor court.</p><button data-view="editor">Open editor</button></article><article class="feature-card"><span>▤</span><h2>Drill Library</h2><p>Search your saved ideas and reopen any drill exactly where you left it.</p><button data-view="library">Browse drills</button></article><article class="feature-card"><span>≡</span><h2>Practice Builder</h2><p>Sequence saved drills into a focused, timed practice plan.</p><button data-view="practices">Build practice</button></article></div>
+    </section>
+
+    <section id="view-library" class="view page">
+      <div class="page-heading compact"><div><p class="eyebrow">Your playbook</p><h1>Drill Library</h1></div><button class="btn primary" data-view="editor" id="library-new">＋ New drill</button></div>
+      <div class="library-tools"><input id="drill-search" placeholder="Search by name, objective or tag…"><select id="drill-filter"><option value="">All categories</option><option>Serve</option><option>Reception</option><option>Setting</option><option>Attack</option><option>Block</option><option>Defense</option><option>Transition</option><option>Warm-up</option><option>Six versus six</option></select></div>
+      <div id="drill-grid" class="card-grid"></div>
+    </section>
+
+    <section id="view-practices" class="view page">
+      <div class="page-heading compact"><div><p class="eyebrow">Session planning</p><h1>Practice Builder</h1></div><button class="btn primary" id="save-practice">Save practice</button></div>
+      <div class="practice-layout">
+        <form id="practice-form" class="form-card">
+          <h2>Practice details</h2>
+          <label>Practice name *<input id="practice-name" required placeholder="Tuesday: side-out focus"></label>
+          <div class="two-col"><label>Date<input id="practice-date" type="date"></label><label>Team<input id="practice-team" placeholder="Senior Women"></label></div>
+          <label>Main objective<input id="practice-objective" placeholder="First-ball side-out"></label>
+          <label>Notes<textarea id="practice-notes" rows="4"></textarea></label>
+          <button type="button" class="btn ghost" id="new-practice">Clear / New</button>
+        </form>
+        <section class="form-card practice-plan"><div class="plan-head"><div><h2>Practice timeline</h2><p>Choose “Add to practice” in the Drill Library.</p></div><b id="practice-total">0 min</b></div><div id="practice-items"></div></section>
+      </div>
+      <h2 class="section-title">Saved practices</h2><div id="practice-grid" class="card-grid"></div>
+    </section>
+
+    <section id="view-assets" class="view page asset-review">
+      <div class="page-heading compact">
+        <div><p class="eyebrow">Visual review</p><h1>Asset Library</h1><p>Review every local player pose and equipment variant before using it in drills.</p></div>
+        <div class="asset-summary" id="asset-summary"></div>
+      </div>
+      <div class="library-tools">
+        <input id="asset-search" placeholder="Search role, pose, team or equipment…">
+        <select id="asset-category">
+          <option value="">All assets</option>
+          <option value="player">Players</option>
+          <option value="experimental_player">Experimental players</option>
+          <option value="ball">Balls</option>
+          <option value="equipment">Equipment</option>
+        </select>
+        <select id="asset-team">
+          <option value="">All teams</option>
+          <option value="A">Team A</option>
+          <option value="B">Team B</option>
+          <option value="Neutral">Coach / Neutral</option>
+        </select>
+      </div>
+      <div id="asset-grid" class="asset-grid"></div>
+    </section>
+  </main>
+  <div id="print-pages" aria-hidden="true"></div>
+
+  <dialog id="drill-dialog">
+    <form method="dialog" id="drill-form">
+      <div class="dialog-head"><div><p class="eyebrow">Drill details</p><h2>Describe the drill</h2></div><button value="cancel" aria-label="Close">×</button></div>
+      <div class="dialog-grid">
+        <label class="span-2">Drill name *<input id="meta-name" required placeholder="e.g. Three-player reception wave"></label>
+        <label>Main objective<input id="meta-objective"></label><label>Secondary objective<input id="meta-secondary"></label>
+        <label>Players<input id="meta-players" type="number" min="0"></label><label>Duration (min)<input id="meta-duration" type="number" min="0"></label>
+        <label>Repetitions<input id="meta-repetitions"></label><label>Courts<input id="meta-courts" type="number" min="1"></label>
+        <label>Intensity<select id="meta-intensity"><option>Low</option><option selected>Medium</option><option>High</option></select></label>
+        <label>Skill level<select id="meta-skill"><option>Beginner</option><option selected>Intermediate</option><option>Advanced</option><option>Elite</option></select></label>
+        <label class="span-2">Tags<input id="meta-tags" placeholder="Reception, Side-out, Warm-up"></label>
+        <label class="span-2">Equipment<textarea id="meta-equipment"></textarea></label>
+        <label class="span-2">Starting positions<textarea id="meta-starting"></textarea></label>
+        <label class="span-2">Drill sequence<textarea id="meta-sequence"></textarea></label>
+        <label class="span-2">Rotation method<textarea id="meta-rotation"></textarea></label>
+        <label class="span-2">Scoring system<textarea id="meta-scoring"></textarea></label>
+        <label class="span-2">Coaching points<textarea id="meta-coaching"></textarea></label>
+        <label>Common mistakes<textarea id="meta-mistakes"></textarea></label><label>Notes<textarea id="meta-notes"></textarea></label>
+      </div>
+      <div class="dialog-actions"><button value="cancel" class="btn ghost">Cancel</button><button id="apply-meta" value="default" class="btn primary">Apply details</button></div>
+    </form>
+  </dialog>
+  <script src="/static/js/interaction.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
