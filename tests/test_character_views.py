@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -16,38 +17,38 @@ INDEX_HTML = ROOT / "app" / "templates" / "index.html"
 
 CHARACTER_VIEWS = ["Front", "3/4 Front Left", "3/4 Front Right", "Left Side", "Right Side", "3/4 Back Left", "3/4 Back Right", "Back", "45° Back"]
 BACKSIDE_VIEWS = ["Back", "3/4 Back Left", "3/4 Back Right", "45° Back"]
-RELEASED_BACKSIDE_IDS = {
-    "professional_team_a_middle_standing_on_net_prepared_to_jump_back",
-    "professional_team_a_middle_standing_on_net_block_ready_back",
-    "professional_team_a_middle_jump_block_back",
-    "professional_team_a_middle_jump_block_left_back",
-    "professional_team_a_middle_jump_block_right_back",
-    "professional_team_a_middle_jump_block_spread_back",
-    "professional_team_a_middle_jump_block_close_back",
-    "professional_team_a_middle_quick_block_back",
-    "professional_female_athlete_01_ready_back",
-    "professional_team_b_female_athlete_01_ready_back",
-    "professional_female_athlete_01_front_set_back",
-    "professional_team_b_female_athlete_01_front_set_back",
-    "professional_female_athlete_01_back_set_back",
-    "professional_team_b_female_athlete_01_back_set_back",
-    "professional_female_athlete_01_jump_set_back",
-    "professional_team_b_female_athlete_01_jump_set_back",
-    "professional_female_athlete_01_one_hand_set_back",
-    "professional_team_b_female_athlete_01_one_hand_set_back",
-    "professional_female_athlete_01_setter_dump_back",
-    "professional_team_b_female_athlete_01_setter_dump_back",
-    "professional_female_athlete_01_transition_back",
-    "professional_team_b_female_athlete_01_transition_back",
-    "professional_female_athlete_01_defensive_ready_back",
-    "professional_team_b_female_athlete_01_defensive_ready_back",
-    "professional_female_athlete_01_emergency_set_back",
-    "professional_team_b_female_athlete_01_emergency_set_back",
-}
+HIDDEN_RELEASE_STATES = {"hidden", "hidden_quality_hold", "hidden_unfinished", "draft", "review", "rejected"}
 
 
-def is_released_backside_id(asset_id: str) -> bool:
-    return asset_id in RELEASED_BACKSIDE_IDS
+def is_released_professional_asset(asset: dict) -> bool:
+    return (
+        asset.get("category") == "player"
+        and asset.get("visualStyle") == "professional"
+        and asset.get("releaseStatus") == "released"
+        and asset.get("visibleInEditor") is True
+        and asset.get("professionalGrade", True) is not False
+        and asset.get("isReleased", True) is not False
+        and asset.get("isVisible", True) is not False
+        and asset.get("isEnabled", True) is not False
+        and str(asset.get("releaseState", "released")) not in HIDDEN_RELEASE_STATES
+    )
+
+
+def expected_released_ids(*, view: str | None = None) -> set[str]:
+    registry = AssetRegistry(MANIFEST)
+    return {
+        asset["id"] for asset in registry.all_assets
+        if is_released_professional_asset(asset)
+        and (view is None or asset.get("view") == view)
+    }
+
+
+def assert_runtime_files_exist(asset: dict) -> None:
+    for field in ("asset", "thumbnail"):
+        value = asset[field]
+        assert value.startswith("/static/")
+        assert ".." not in value
+        assert (STATIC / value.removeprefix("/static/")).is_file()
 
 
 def pptx_slide_count(path: Path) -> int:
@@ -70,12 +71,26 @@ def test_only_released_professional_backside_assets_are_visible():
         and asset.get("visualStyle") == "professional"
         and asset.get("view") != "Front"
     ]
+    backside_ids = {asset["id"] for asset in backside}
+    expected_ids = {
+        *expected_released_ids(view="Back"),
+        *expected_released_ids(view="3/4 Back Left"),
+        *expected_released_ids(view="3/4 Back Right"),
+        *expected_released_ids(view="45° Back"),
+    }
 
-    assert all(is_released_backside_id(asset["id"]) for asset in backside)
-    assert not [asset for asset in backside if asset["id"].startswith("professional_45_back_")]
-    assert {asset["view"] for asset in backside} == {"Back"}
-    assert all(asset.get("professionalGrade") is True for asset in backside)
+    assert backside_ids == expected_ids
+    assert [asset["id"] for asset in backside].count("professional_45_back_a_female_athlete_01_defense_ready") == 1
+    assert {asset["view"] for asset in backside}.issubset(set(BACKSIDE_VIEWS))
+    assert {asset["view"] for asset in backside if asset["id"].startswith("professional_45_back_")} == {"45° Back"}
+    assert all(asset.get("category") == "player" for asset in backside)
+    assert all(asset.get("visualStyle") == "professional" for asset in backside)
+    assert all(asset.get("visibleInEditor") is True for asset in backside)
     assert all(asset.get("releaseStatus") == "released" for asset in backside)
+    assert all(asset.get("professionalGrade", True) is not False for asset in backside)
+    assert all(not str(asset.get("releaseState", "released")).startswith("hidden") for asset in backside)
+    for asset in backside:
+        assert_runtime_files_exist(asset)
 
 
 def test_hidden_unfinished_assets_are_not_returned_by_api(client):
@@ -85,15 +100,95 @@ def test_hidden_unfinished_assets_are_not_returned_by_api(client):
         if asset.get("category") == "player"
         and asset.get("visualStyle") == "professional"
     ]
+    professional_ids = {asset["id"] for asset in professional}
+    registry = AssetRegistry(MANIFEST)
+    hidden_assets = [
+        asset for asset in registry.all_assets
+        if asset.get("category") == "player"
+        and asset.get("visualStyle") == "professional"
+        and (
+            asset.get("visibleInEditor") is False
+            or str(asset.get("releaseStatus", "")) in HIDDEN_RELEASE_STATES
+            or str(asset.get("releaseState", "")) in HIDDEN_RELEASE_STATES
+        )
+    ]
 
     assert all(asset.get("visibleInEditor", True) is not False for asset in professional)
     assert all(asset.get("releaseStatus", "released") == "released" for asset in professional)
     assert all(asset.get("professionalGrade", True) is not False for asset in professional)
-    assert all(
-        is_released_backside_id(asset["id"])
-        for asset in professional
-        if asset.get("view") != "Front"
+    assert professional_ids == expected_released_ids()
+    assert professional_ids.isdisjoint({asset["id"] for asset in hidden_assets})
+    assert any(asset.get("releaseStatus") == "hidden_unfinished" for asset in hidden_assets)
+    assert any(asset.get("visibleInEditor") is False for asset in hidden_assets)
+    assert not [asset for asset in professional if asset.get("visualStyle") == "legacy_vector"]
+    assert not [asset for asset in professional if asset.get("category") in {"fallback", "placeholder"}]
+    assert len(professional_ids) == len(professional)
+    for asset in professional:
+        assert asset.get("role")
+        assert asset.get("pose")
+        assert asset.get("view") in CHARACTER_VIEWS
+        assert asset.get("team") in {"A", "B", "Neutral"}
+        assert_runtime_files_exist(asset)
+
+
+def test_released_professional_expectations_are_manifest_driven():
+    registry = AssetRegistry(MANIFEST)
+    api_ids = {
+        asset["id"] for asset in registry.manifest()["assets"]
+        if asset.get("category") == "player"
+        and asset.get("visualStyle") == "professional"
+    }
+
+    assert api_ids == expected_released_ids()
+    assert {
+        asset["id"] for asset in registry.manifest()["assets"]
+        if asset.get("view") == "45° Back"
+        and asset.get("visualStyle") == "professional"
+    } == expected_released_ids(view="45° Back")
+
+
+def test_changing_hidden_asset_to_released_changes_manifest_expected_result():
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    candidate = next(
+        asset for asset in payload["assets"]
+        if asset.get("category") == "player"
+        and asset.get("visualStyle") == "professional"
+        and asset.get("releaseStatus") in HIDDEN_RELEASE_STATES
+        and asset.get("visibleInEditor") is False
     )
+    promoted_id = candidate["id"]
+    candidate["releaseStatus"] = "released"
+    candidate["releaseState"] = "released"
+    candidate["visibleInEditor"] = True
+    candidate["isReleased"] = True
+    candidate["isVisible"] = True
+    candidate["isEnabled"] = True
+
+    manifest = MANIFEST.with_name("manifest.promoted-test.json")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    try:
+        promoted = AssetRegistry(manifest)
+    finally:
+        manifest.unlink(missing_ok=True)
+
+    assert promoted_id in {
+        asset["id"] for asset in promoted.library_assets
+        if asset.get("category") == "player"
+        and asset.get("visualStyle") == "professional"
+    }
+
+
+def test_back_and_45_back_release_filters_are_distinct_and_deterministic():
+    first = AssetRegistry(MANIFEST)
+    second = AssetRegistry(MANIFEST)
+    back_ids = expected_released_ids(view="Back")
+    back45_ids = expected_released_ids(view="45° Back")
+
+    assert back_ids
+    assert back45_ids
+    assert back_ids.isdisjoint(back45_ids)
+    assert len([asset["id"] for asset in first.manifest()["assets"]]) == len({asset["id"] for asset in first.manifest()["assets"]})
+    assert [asset["id"] for asset in first.library_assets] == [asset["id"] for asset in second.library_assets]
 
 
 def test_unreleased_backside_view_returns_controlled_error():
