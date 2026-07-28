@@ -239,6 +239,14 @@ class AssetRegistry:
 
     @staticmethod
     def _promote_approved_professional_asset(asset: dict[str, Any]) -> None:
+        release_status = str(asset.get("releaseStatus", ""))
+        release_state = str(asset.get("releaseState", ""))
+        if (
+            asset.get("visibleInEditor") is False
+            or release_status.startswith("hidden")
+            or release_state.startswith("hidden")
+        ):
+            return
         approved = asset.get("isApproved") is True or str(asset.get("releaseState", "")).lower() == "approved"
         if not approved:
             return

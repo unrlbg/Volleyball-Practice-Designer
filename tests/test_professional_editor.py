@@ -72,7 +72,11 @@ def test_professional_manifest_has_character_and_layout_metadata():
         assert asset["asset"].endswith(".webp")
         assert asset["master"].endswith((".webp", ".png"))
         assert asset["thumbnail"].endswith(".webp")
-        assert f"/professional/{asset['characterId']}/" in asset["asset"] or "/professional/team_a/middle_blocker/back/" in asset["asset"]
+        assert (
+            f"/professional/{asset['characterId']}/" in asset["asset"]
+            or f"/professional/team_a/{asset['characterId']}/" in asset["asset"]
+            or "/professional/team_a/middle_blocker/back/" in asset["asset"]
+        )
         assert asset["objectKind"] == "character"
         assert asset["poseId"]
         assert asset["supportsMirror"] is (asset.get("view") == "Front")

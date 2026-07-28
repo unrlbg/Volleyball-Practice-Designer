@@ -519,6 +519,38 @@
   function addObject(data) {
     snapshot(); const obj = defaultObject(data); frame().objects.push(obj); state.selected = [obj.id]; renderAll();
   }
+  function addAssetLibraryObject(asset) {
+    if (!asset) return toast("Asset is not available");
+    const isPlayer = asset.category === "player" && asset.visualStyle === "professional";
+    const data = isPlayer ? {
+      type: "character",
+      label: asset.role || asset.pose || "Player",
+      role: asset.role || "",
+      pose: asset.pose || "",
+      team: asset.team || state.team,
+      characterView: normalizeCharacterView(asset.view || asset.characterView),
+      characterId: asset.characterId,
+      visualStyle: "professional",
+      assetId: asset.id,
+      width: asset.defaultWidth,
+      height: asset.defaultHeight,
+      anchor: asset.anchor,
+      facing: "Right",
+      mirrorX: false,
+      flipY: false,
+      showShadow: asset.showShadow !== false,
+    } : {
+      type: asset.category === "equipment" ? "equipment" : asset.category,
+      label: asset.variant || asset.pose || asset.id,
+      assetId: asset.id,
+      width: asset.defaultWidth,
+      height: asset.defaultHeight,
+      anchor: asset.anchor,
+    };
+    addObject(data);
+    showView("editor");
+    toast(`Added ${asset.pose || asset.variant || asset.id}`);
+  }
   function objectById(id) { return frame().objects.find(o => o.id === id) || courtById(id); }
 
   function addCourt(overrides = {}) {
@@ -1498,6 +1530,17 @@
     }
     const selectable = asset => asset.category === "player" && asset.visualStyle === "professional";
     grid.innerHTML = visibleAssets.map(asset => `<article class="asset-card ${selectedFigureAssetIds.has(asset.id) ? "selected" : ""}" data-review-asset="${asset.id}"><img src="${asset.thumbnail}" alt="${escapeHtml(asset.pose || asset.variant || asset.id)}" loading="lazy" decoding="async" onerror="this.closest('.asset-card')?.classList.add('asset-card-error');this.removeAttribute('src')"><b>${escapeHtml(asset.pose || asset.variant || asset.id)}</b><small>${escapeHtml([asset.team, asset.role || asset.equipmentType || asset.category].filter(Boolean).join(" · "))}</small>${selectable(asset) ? `<label class="asset-select"><input type="checkbox" data-figure-select="${asset.id}" ${selectedFigureAssetIds.has(asset.id) ? "checked" : ""}> Select</label>` : ""}</article>`).join("");
+    $$("[data-review-asset]").forEach(card => {
+      const assetId = card.dataset.reviewAsset;
+      card.dataset.assetId = assetId;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "asset-place";
+      button.dataset.assetPlace = assetId;
+      button.textContent = "Add to Court";
+      button.onclick = () => addAssetLibraryObject(assetIndex.get(assetId));
+      card.insertBefore(button, $(".asset-select", card));
+    });
     $$("[data-figure-select]").forEach(input => input.onchange = () => {
       if (input.checked) selectedFigureAssetIds.add(input.dataset.figureSelect);
       else selectedFigureAssetIds.delete(input.dataset.figureSelect);
