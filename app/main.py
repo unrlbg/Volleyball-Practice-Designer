@@ -22,7 +22,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Volleyball Practice Designer", version="0.1.0")
     app.state.drills = JsonStore(DATA / "drills")
     app.state.practices = JsonStore(DATA / "practices")
+    app.state.exports_dir = DATA / "exports"
+    app.state.exports_dir.mkdir(parents=True, exist_ok=True)
     app.state.assets = AssetRegistry(ROOT / "app" / "static" / "assets" / "manifest.json")
+    print(app.state.assets.startup_report(), flush=True)
     app.include_router(router)
     app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
 

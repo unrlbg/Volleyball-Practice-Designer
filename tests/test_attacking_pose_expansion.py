@@ -147,7 +147,16 @@ def test_grouped_pose_picker_only_lists_manifest_backed_poses():
     for role, role_groups in groups.items():
         catalog = set(payload["professionalPoseCatalog"][role])
         for poses in role_groups.values():
-            assert set(poses).issubset(catalog)
+            for pose in poses:
+                assert pose in catalog or any(
+                    item.get("category") == "player"
+                    and item.get("visualStyle") == "professional"
+                    and item.get("role") == role
+                    and item.get("pose") == pose
+                    and item.get("visibleInEditor") is not False
+                    and not str(item.get("releaseStatus", "released")).startswith("hidden")
+                    for item in payload["assets"]
+                )
     assert groups["outside"]["Attack"] == OUTSIDE_ATTACKS[:-2]
     assert groups["opposite"]["Attack"] == OPPOSITE_ATTACKS[:-2]
     assert "One-Foot Slide Approach" in groups["middle"]["Slide Attack"]
@@ -221,6 +230,7 @@ def test_no_unbacked_attacking_pose_is_exposed():
     professional = [
         item for item in payload["assets"]
         if item.get("visualStyle") == "professional"
+        and item.get("view") == "Front"
     ]
     for role, poses in payload["professionalPoseCatalog"].items():
         teams = ("Neutral",) if role == "coach" else ("A", "B")

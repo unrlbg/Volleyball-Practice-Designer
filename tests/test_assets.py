@@ -25,7 +25,7 @@ def registry() -> AssetRegistry:
 
 
 def test_asset_manifest_loads(registry):
-    assert registry.schema_version == 6
+    assert registry.schema_version == 8
     assert len(registry.assets) >= 200
     assert len(registry.by_id) == len(registry.assets)
 
@@ -33,8 +33,18 @@ def test_asset_manifest_loads(registry):
 def test_asset_api_loads(client):
     response = client.get("/api/assets")
     assert response.status_code == 200
-    assert response.json()["schemaVersion"] == 6
+    assert response.json()["schemaVersion"] == 8
     assert len(response.json()["assets"]) >= 200
+    assert len(response.json()["libraryAssets"]) >= len(response.json()["assets"])
+    assert response.json()["diagnostics"]["professionalAssetsLoaded"] > 0
+
+
+def test_asset_diagnostics_api_loads(client):
+    response = client.get("/api/assets/diagnostics")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totalManifestEntries"] >= payload["validEntries"]
+    assert "skippedAssets" in payload
 
 
 @pytest.mark.parametrize(
@@ -235,3 +245,79 @@ def test_manifest_contains_only_stable_unique_ids(registry):
     ids = [asset["id"] for asset in registry.assets]
     assert len(ids) == len(set(ids))
     assert all(asset_id == asset_id.lower() and " " not in asset_id for asset_id in ids)
+
+
+def test_invalid_optional_asset_is_skipped_without_crashing():
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    bad = deepcopy(next(asset for asset in payload["assets"] if asset.get("category") == "player"))
+    bad["id"] = "professional_bad_optional_asset"
+    bad["asset"] = "/static/assets/characters/professional/missing_runtime.webp"
+    bad["thumbnail"] = "/static/assets/character_thumbnails/professional/missing_runtime.webp"
+    payload["assets"].append(bad)
+    manifest = MANIFEST.with_name("manifest.invalid-test.json")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    try:
+        loaded = AssetRegistry(manifest)
+    finally:
+        manifest.unlink(missing_ok=True)
+
+    assert "professional_bad_optional_asset" not in loaded.by_id
+    assert "professional_bad_optional_asset" not in {asset["id"] for asset in loaded.library_assets}
+    assert any("professional_bad_optional_asset skipped" in warning for warning in loaded.validation_warnings)
+    assert loaded.manifest()["validationWarnings"] == loaded.validation_warnings
+
+
+def test_malformed_manifest_entries_do_not_blank_asset_library():
+    payload = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    good_count = len(AssetRegistry(MANIFEST).library_assets)
+    bad_missing_id = deepcopy(next(asset for asset in payload["assets"] if asset.get("category") == "player"))
+    bad_missing_id.pop("id")
+    bad_role = deepcopy(next(asset for asset in payload["assets"] if asset.get("category") == "player" and asset.get("visualStyle") == "professional"))
+    bad_role["id"] = "professional_bad_role"
+    bad_role["role"] = "wrong role"
+    payload["assets"].extend([bad_missing_id, bad_role, "not an asset object"])
+    manifest = MANIFEST.with_name("manifest.malformed-test.json")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    try:
+        loaded = AssetRegistry(manifest)
+    finally:
+        manifest.unlink(missing_ok=True)
+
+    assert len(loaded.library_assets) == good_count
+    assert loaded.diagnostics["invalidEntries"] >= 3
+    assert loaded.diagnostics["professionalAssetsLoaded"] > 0
+
+
+def test_asset_library_uses_quality_gated_assets_and_manifest_failures_are_nonfatal():
+    source = (ROOT / "app" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert "assetLibraryManifest = validatedManifestAssets(payload.libraryAssets || payload.assets || [])" in source
+    assert "const style = $(\"#asset-style\")?.value || \"\";" in source
+    assert "const visibleAssets = assets;" in source
+    assert "No assets match the current filters." in source
+    assert "data-asset-reset-filters" in source
+    assert "data-asset-show-professional" in source
+    assert "Developer Diagnostics" in source
+    assert 'id="asset-style"' in html
+    assert 'id="asset-diagnostics"' in html
+    assert '<option value="professional" selected>Professional</option>' in html
+    assert "Asset Library loads when opened" in source
+    assert "renderPracticeItems(); refreshData();" in source
+    assert "renderPracticeItems(); renderAssetLibrary(); refreshData();" not in source
+    assert "console.warn(`Invalid Professional manifest entry:" in source
+    assert "throw new Error(`Invalid Professional manifest entry:" not in source
+    assert "validatedManifestAssets(payload.assets || [])" in source
+
+
+def test_interaction_assets_do_not_intercept_button_clicks():
+    css = (ROOT / "app" / "static" / "css" / "improvements.css").read_text(encoding="utf-8")
+    html = (ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+    for selector in (".palette-thumb", ".frame-thumbnail", ".variant-tile img", ".asset-card img"):
+        start = css.index(selector)
+        block = css[start:css.index("}", start)]
+        assert "pointer-events: none" in block
+    assert '/static/js/app.js?v=p0-interaction' in html
+    assert '/static/js/interaction.js?v=p0-interaction' in html
+    assert '/static/css/improvements.css?v=p0-interaction' in html

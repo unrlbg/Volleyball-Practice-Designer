@@ -29,14 +29,29 @@
   const roleKeys = { "Generic Player": "generic", Setter: "setter", Libero: "libero", Middle: "middle", Outside: "outside", Opposite: "opposite", Coach: "coach" };
   const heroRoles = ["Setter", "Outside", "Opposite", "Middle", "Libero", "Coach"];
   const heroDefaults = { Setter: "Ready", Outside: "Reception", Opposite: "Attack Start", Middle: "Block", Libero: "Reception", Coach: "Holding Ball" };
+  const fallbackCharacterViews = ["Front", "3/4 Front Left", "3/4 Front Right", "Left Side", "Right Side", "3/4 Back Left", "3/4 Back Right", "Back", "45\u00b0 Back"];
+  const ASSET_LIBRARY_PAGE_SIZE = 96;
   const assetAliases = { Ball: "single_ball", "Ball group": "ball_group", "Ball pile": "ball_pile", "Ball cart": "ball_cart_blue" };
+  const structuredNoteSections = [
+    ["coachingPoints", "Coaching Points", true],
+    ["commonMistakes", "Common Mistakes", true],
+    ["progressions", "Progressions", true],
+    ["regressions", "Regressions", true],
+    ["variations", "Variations", true]
+  ];
   let assetManifest = [];
+  let assetLibraryManifest = [];
+  let assetDiagnostics = {};
+  let clientSkippedAssets = [];
   let assetIndex = new Map();
   let manifestDefaultPlayerStyle = "professional";
   let professionalPoseGroups = {};
+  let professionalCharacterViews = fallbackCharacterViews;
+  let defaultCharacterView = "Front";
   let paletteCategory = "Players";
   let paletteQuery = "";
   let paletteLiberoOnly = false;
+  let selectedFigureAssetIds = new Set();
   const COURT_RATIO = 2;
   const WORKSPACE = { width: 2600, height: 1800 };
   const courtStyles = {
@@ -67,13 +82,53 @@
     const court = defaultCourt();
     return { id: uid(), name, objects: [], courts: [court], court: legacyCourtSettings(court) };
   };
+  const defaultNoteItem = (text = "", order = 0) => ({ id: uid(), text, completed: false, order });
+  const defaultDrillNotes = () => ({
+    description: "", coachingPoints: [], commonMistakes: [], progressions: [], regressions: [],
+    variations: [], equipmentNotes: "", generalComments: "", postTrainingObservations: "", formatVersion: 1
+  });
+  const defaultPracticeNotes = () => ({
+    mainObjective: "", technicalObjective: "", tacticalObjective: "", physicalObjective: "", intensity: "",
+    importantNotes: "", generalComments: "", postPracticeReview: "", formatVersion: 1
+  });
+  const defaultObjectNote = () => ({ text: "", showIndicator: true, showInExport: false });
+  function normalizeNoteItem(value, order) {
+    if (typeof value === "string") return value.trim() ? defaultNoteItem(value.trim(), order) : null;
+    if (!value || typeof value !== "object" || !String(value.text || "").trim()) return null;
+    return { id: value.id || uid(), text: String(value.text).trim(), completed: !!value.completed, order: Number.isFinite(+value.order) ? +value.order : order };
+  }
+  function normalizeDrillNotes(raw = {}, legacy = {}) {
+    const notes = defaultDrillNotes(), source = raw && typeof raw === "object" ? raw : {};
+    ["description", "equipmentNotes", "generalComments", "postTrainingObservations"].forEach(key => notes[key] = typeof source[key] === "string" ? source[key] : "");
+    if (!notes.generalComments && typeof legacy.notes === "string") notes.generalComments = legacy.notes;
+    if (!notes.equipmentNotes && typeof legacy.equipment === "string") notes.equipmentNotes = legacy.equipment;
+    const legacyLists = { coachingPoints: legacy.coaching, commonMistakes: legacy.mistakes };
+    structuredNoteSections.forEach(([key]) => {
+      let values = Array.isArray(source[key]) ? source[key] : [];
+      if (!values.length && typeof legacyLists[key] === "string") values = legacyLists[key].split(/\r?\n/).filter(Boolean);
+      notes[key] = values.map(normalizeNoteItem).filter(Boolean).sort((a, b) => a.order - b.order).map((item, index) => ({ ...item, order: index }));
+    });
+    return notes;
+  }
+  function normalizePracticeNotes(raw = {}, legacy = {}) {
+    const notes = defaultPracticeNotes(), source = raw && typeof raw === "object" ? raw : {};
+    Object.keys(notes).forEach(key => { if (key !== "formatVersion") notes[key] = typeof source[key] === "string" ? source[key] : ""; });
+    if (!notes.mainObjective && typeof legacy.main_objective === "string") notes.mainObjective = legacy.main_objective;
+    if (!notes.generalComments && typeof legacy.notes === "string") notes.generalComments = legacy.notes;
+    return notes;
+  }
+  function normalizeObjectNote(raw = {}) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return { text: typeof source.text === "string" ? source.text : "", showIndicator: source.showIndicator !== false, showInExport: !!source.showInExport };
+  }
   let state = {
     id: null, metadata: { name: "Untitled drill", objective: "", tags: [] }, created_at: null,
+    notes: defaultDrillNotes(),
     frames: [emptyFrame()], frameIndex: 0, selected: [], clipboard: [], team: "A",
     zoom: 1, panX: 0, panY: 0, history: [], future: [], drawing: null,
     exportMode: "all", printMode: "all"
   };
-  let currentPractice = { id: null, items: [] };
+  let currentPractice = { id: null, items: [], practiceNotes: defaultPracticeNotes() };
   let cachedDrills = [];
   let interaction = null;
   const svg = $("#court-svg"), viewport = $("#viewport"), courtLayer = $("#court-layer"), objectsLayer = $("#objects-layer"), selectionLayer = $("#selection-layer");
@@ -137,22 +192,92 @@
   const assetKey = value => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   const isCharacter = object => ["player", "character"].includes(object?.type);
   const normalizeVisualStyle = () => "professional";
-  function playerAsset(team, role, pose) {
+  function normalizeCharacterView(value) {
+    const normalized = assetKey(value);
+    const aliases = {
+      front: "Front", back: "Back", left: "Left Side", left_side: "Left Side",
+      right: "Right Side", right_side: "Right Side", "3_4_front": "Front",
+      three_quarter_front: "Front", "34_front": "Front",
+      "3_4_front_left": "3/4 Front Left", three_quarter_front_left: "3/4 Front Left", "34_front_left": "3/4 Front Left",
+      "3_4_front_right": "3/4 Front Right", three_quarter_front_right: "3/4 Front Right", "34_front_right": "3/4 Front Right",
+      "3_4_back": "Back", three_quarter_back: "Back", "34_back": "Back",
+      "3_4_back_left": "3/4 Back Left", three_quarter_back_left: "3/4 Back Left", "34_back_left": "3/4 Back Left",
+      "3_4_back_right": "3/4 Back Right", three_quarter_back_right: "3/4 Back Right", "34_back_right": "3/4 Back Right",
+      "45_back": "45\u00b0 Back", "45_degree_back": "45\u00b0 Back", "45_back_view": "45\u00b0 Back"
+    };
+    return aliases[normalized] || defaultCharacterView;
+  }
+  function validAssetPath(path) {
+    return typeof path === "string" && path.startsWith("/static/") && !path.includes("..") && !/^https?:\/\//i.test(path);
+  }
+  function skipClientAsset(id, reason, asset = null) {
+    const entry = { id: id || "unknown", reason };
+    clientSkippedAssets.push(entry);
+    console.warn(`Skipping Asset Library entry: ${entry.id} - ${reason}`, asset || "");
+  }
+  function validatedManifestAssets(assets) {
+    const ids = new Set();
+    clientSkippedAssets = [];
+    return assets.filter(asset => {
+      const id = asset?.id || "unknown";
+      if (!asset || typeof asset !== "object") {
+        skipClientAsset(id, "entry is not an object", asset);
+        return false;
+      }
+      if (ids.has(id)) {
+        skipClientAsset(id, "duplicate asset ID", asset);
+        return false;
+      }
+      ids.add(id);
+      if (!validAssetPath(asset.asset) || !validAssetPath(asset.thumbnail)) {
+        skipClientAsset(id, "invalid asset or thumbnail path", asset);
+        return false;
+      }
+      return true;
+    });
+  }
+  function isDefaultCharacterViewValue(value) {
+    const key = assetKey(value || defaultCharacterView);
+    return key === assetKey(defaultCharacterView) || ["front", "3_4_front", "three_quarter_front", "34_front"].includes(key);
+  }
+  function playerAssetsFor(team, role, pose) {
     const roleKey = roleKeys[role] || assetKey(role) || "generic";
     const assetTeam = roleKey === "coach" ? "Neutral" : (team === "B" ? "B" : "A");
     const poseKey = assetKey(pose).replace("attack_starting_position", "attack_start");
+    return assetManifest.filter(a =>
+      a.category === "player" && a.role === roleKey && a.team === assetTeam
+      && a.visualStyle === "professional" && assetKey(a.pose) === poseKey
+    );
+  }
+  function characterViewAssets(team, role, pose) {
+    const assets = playerAssetsFor(team, role, pose);
+    return professionalCharacterViews.map(view => assets.find(asset => normalizeCharacterView(asset.view || asset.characterView) === view)).filter(Boolean);
+  }
+  function availableCharacterViews(team, role, pose) {
+    return characterViewAssets(team, role, pose).map(asset => normalizeCharacterView(asset.view || asset.characterView));
+  }
+  function playerAsset(team, role, pose, characterView = defaultCharacterView) {
+    const roleKey = roleKeys[role] || assetKey(role) || "generic";
+    const assetTeam = roleKey === "coach" ? "Neutral" : (team === "B" ? "B" : "A");
+    const poseKey = assetKey(pose).replace("attack_starting_position", "attack_start");
+    const view = normalizeCharacterView(characterView);
     const exact = (candidateTeam = assetTeam) => assetManifest.find(a =>
       a.category === "player" && a.role === roleKey && a.team === candidateTeam
       && a.visualStyle === "professional" && assetKey(a.pose) === poseKey
+      && normalizeCharacterView(a.view || a.characterView) === view
     );
+    if (exact()) return exact();
+    if (view !== defaultCharacterView) return null;
     return exact()
       || assetManifest.find(a => a.category === "player" && a.role === roleKey
-        && a.team === "A" && a.visualStyle === "professional" && assetKey(a.pose) === poseKey)
+        && a.team === "A" && a.visualStyle === "professional" && assetKey(a.pose) === poseKey
+        && isDefaultCharacterViewValue(a.view || a.characterView))
       || assetManifest.find(a => a.category === "player" && a.role === roleKey
         && a.team === assetTeam && a.visualStyle === "professional"
-        && assetKey(a.pose) === assetKey(heroDefaults[role] || "Ready"))
+        && assetKey(a.pose) === assetKey(heroDefaults[role] || "Ready")
+        && isDefaultCharacterViewValue(a.view || a.characterView))
       || assetManifest.find(a => a.category === "player" && a.role === roleKey
-        && a.visualStyle === "professional")
+        && a.visualStyle === "professional" && isDefaultCharacterViewValue(a.view || a.characterView))
       || assetIndex.get("safe_fallback");
   }
   function equipmentAsset(label) {
@@ -162,14 +287,27 @@
   function resolveAsset(o) {
     const indexed = o.assetId && assetIndex.get(o.assetId);
     if (isCharacter(o)) {
-      if (indexed?.visualStyle === "professional") return indexed;
-      return playerAsset(o.team, o.role || o.label, o.pose);
+      if (indexed?.visualStyle === "professional" && normalizeCharacterView(indexed.view || indexed.characterView) === normalizeCharacterView(o.characterView)) return indexed;
+      return playerAsset(o.team, o.role || o.label, o.pose, o.characterView) || indexed || playerAsset(o.team, o.role || o.label, o.pose);
     }
     if (indexed) return indexed;
     if (o.type === "equipment") return equipmentAsset(o.label);
     return assetIndex.get("safe_fallback");
   }
   function migrateVisualObject(o) {
+    if (!o.note || typeof o.note !== "object") o.note = normalizeObjectNote(o.note);
+    else o.note = normalizeObjectNote(o.note);
+    if (o.type === "sticky-note") {
+      o.label ||= "Sticky Note";
+      o.text ||= "";
+      o.width ||= 210;
+      o.height ||= 120;
+      o.backgroundColor ||= "#fff8bf";
+      o.textSize ||= 16;
+      o.opacity ??= 1;
+      o.zIndex ??= o.layer ?? 1;
+      return o;
+    }
     if (!["player", "character", "equipment"].includes(o.type)) return o;
     const asset = resolveAsset(o);
     o.assetId = asset.id;
@@ -181,6 +319,7 @@
       o.pose ||= roles[o.role]?.[0] || "Standing";
       o.facing ||= o.mirrorX || o.mirror ? "Left" : "Right";
       o.visualStyle = "professional";
+      o.characterView = normalizeCharacterView(o.characterView || asset.view || asset.characterView);
       o.assetId = asset.id;
       o.characterId = asset.characterId;
       delete o.isProfessionalFallback;
@@ -199,9 +338,16 @@
     const response = await fetch("/api/assets");
     if (!response.ok) throw new Error("Asset manifest could not be loaded");
     const payload = await response.json();
-    assetManifest = payload.assets;
+    assetManifest = validatedManifestAssets(payload.assets || []);
+    assetLibraryManifest = validatedManifestAssets(payload.libraryAssets || payload.assets || []);
+    assetDiagnostics = payload.diagnostics || {};
+    console.info("Asset Library diagnostics", assetDiagnostics);
+    (assetDiagnostics.skippedAssets || []).forEach(item => console.warn(`Skipped asset: ${item.id} (${item.kind}) - ${item.reason}`));
+    clientSkippedAssets.forEach(item => console.warn(`Client-skipped asset: ${item.id} - ${item.reason}`));
     const catalog = payload.professionalPoseCatalog || {};
     professionalPoseGroups = payload.professionalPoseGroups || {};
+    professionalCharacterViews = payload.professionalCharacterViews || fallbackCharacterViews;
+    defaultCharacterView = normalizeCharacterView(payload.defaultCharacterView || "Front");
     Object.entries(catalog).forEach(([role, poses]) => {
       const teams = role === "coach" ? ["Neutral"] : ["A", "B"];
       teams.forEach(team => poses.forEach(pose => {
@@ -209,9 +355,21 @@
           asset.category === "player" && asset.visualStyle === "professional"
           && asset.role === role && asset.team === team
           && assetKey(asset.pose) === assetKey(pose)
+          && isDefaultCharacterViewValue(asset.view || asset.characterView)
         );
-        if (matches.length !== 1) {
-          throw new Error(`Invalid Professional manifest entry: ${team} ${role}/${pose}`);
+        const anyViewMatches = assetManifest.filter(asset =>
+          asset.category === "player" && asset.visualStyle === "professional"
+          && asset.role === role && asset.team === team
+          && assetKey(asset.pose) === assetKey(pose)
+        );
+        const teamAFallbackMatches = assetManifest.filter(asset =>
+          team === "B"
+          && asset.category === "player" && asset.visualStyle === "professional"
+          && asset.role === role && asset.team === "A"
+          && assetKey(asset.pose) === assetKey(pose)
+        );
+        if (matches.length > 1 || (!matches.length && !anyViewMatches.length && !teamAFallbackMatches.length)) {
+          console.warn(`Invalid Professional manifest entry: ${team} ${role}/${pose}; found ${matches.length}`);
         }
       }));
     });
@@ -254,7 +412,7 @@
       ["Balls", equipment.slice(0, 3).map(label => ({ type: "equipment", label }))],
       ["Equipment", equipment.slice(3).map(label => ({ type: "equipment", label }))],
       ["Shapes", [...drawingTools.map(label => ({ type: "drawing", label })), ...shapeTools.filter(label => label !== "Text label").map(label => ({ type: "shape", label }))]],
-      ["Text", [{ type: "text", label: "Text label" }]]
+      ["Text", [{ type: "text", label: "Text label" }, { type: "sticky-note", label: "Sticky Note" }]]
     ].map(([title, items]) => `<section class="palette-section" data-category="${title}"><button class="palette-title">${title}<span>−</span></button><div class="palette-items">${items.map(item).join("")}</div></section>`).join("");
     $("#palette").innerHTML = `
       <div class="palette-tools">
@@ -289,11 +447,16 @@
         addObject({ type: "text", label: "Text label", text: "Instruction", x: 600, y: 390, color: "#14211f" });
         return;
       }
+      if (b.dataset.type === "sticky-note") {
+        addObject({ type: "sticky-note", label: "Sticky Note", text: "Setter starts here", width: 220, height: 120, backgroundColor: "#fff4a6", color: "#14211f" });
+        return;
+      }
       const role = b.dataset.role || "";
       const pose = role ? heroDefaults[role] : "";
-      const asset = b.dataset.type === "character" ? playerAsset(state.team, role, pose) : equipmentAsset(b.dataset.label);
+      const asset = b.dataset.type === "character" ? playerAsset(state.team, role, pose, defaultCharacterView) : equipmentAsset(b.dataset.label);
       addObject({
         type: b.dataset.type, label: b.dataset.label, role, pose,
+        characterView: asset.characterView || defaultCharacterView,
         characterId: asset.characterId || (role === "Coach" ? "coach_01" : "female_athlete_01"),
         visualStyle: "professional", assetId: asset.id,
         width: asset.defaultWidth, height: asset.defaultHeight,
@@ -350,7 +513,7 @@
       rotation: 0, scale: 1, opacity: 1, color: data.color || teamColors[state.team], team: state.team,
       role: data.role || "", pose: data.pose || "", mirror: false, mirrorX: false, flipY: false,
       aspectLocked: true, showShadow: isCharacter(data), zIndex: frame().objects.length + 1,
-      locked: false, text: data.text || "", ...data
+      locked: false, text: data.text || "", note: normalizeObjectNote(data.note), ...data
     };
   }
   function addObject(data) {
@@ -493,6 +656,21 @@
     if (label.includes("bench") || label.includes("chair") || label.includes("box")) return `<rect x="-38" y="-20" width="76" height="40" rx="5" fill="${o.color}"/><path d="M-28 20L-32 39M28 20L32 39" stroke="${o.color}" stroke-width="7"/>`;
     return `<rect x="-30" y="-35" width="60" height="70" rx="6" fill="${o.color}" stroke="#fff" stroke-width="3"/><text y="4" text-anchor="middle" fill="#fff" font-size="10" font-weight="900">${o.label.split(" ").map(x=>x[0]).join("").slice(0,3)}</text>`;
   }
+  function textLines(text, maxChars = 24) {
+    const words = String(text || "").split(/\s+/).filter(Boolean), lines = [];
+    let line = "";
+    words.forEach(word => {
+      if ((line + " " + word).trim().length > maxChars && line) { lines.push(line); line = word; }
+      else line = (line + " " + word).trim();
+    });
+    if (line) lines.push(line);
+    return lines.slice(0, 7);
+  }
+  function noteIndicatorMarkup(o) {
+    return o.note?.text && o.note.showIndicator !== false
+      ? `<g class="note-indicator ${o.note.showInExport ? "export-note" : ""}"><circle cx="${Math.max(16, (o.width || 70) / 2)}" cy="${-Math.max(16, (o.height || 70) / 2)}" r="10" fill="#f2c85b" stroke="#14211f" stroke-width="2"/><text x="${Math.max(16, (o.width || 70) / 2)}" y="${-Math.max(16, (o.height || 70) / 2) + 4}" text-anchor="middle" font-size="12" font-weight="900" fill="#14211f">i</text></g>`
+      : "";
+  }
   function renderObject(o) {
     migrateVisualObject(o);
     const mirrorX = o.mirrorX ?? o.mirror ?? false;
@@ -512,6 +690,10 @@
       g.setAttribute("data-asset-id", asset.id);
     }
     else if (o.type === "text") g.innerHTML = `<rect class="drag-surface" data-drag-surface="text" x="-6" y="-24" width="${o.width}" height="${o.height}"/><rect x="-6" y="-24" width="${o.width}" height="${o.height}" rx="5" fill="white" fill-opacity=".82"/><text x="4" y="0" font-size="18" font-weight="700" fill="${o.color}">${escapeHtml(o.text)}</text>`;
+    else if (o.type === "sticky-note") {
+      const lines = textLines(o.text, Math.max(12, Math.floor((o.width || 220) / Math.max(7, (o.textSize || 16) * .55))));
+      g.innerHTML = `<rect class="drag-surface" data-drag-surface="sticky-note" x="${-o.width / 2}" y="${-o.height / 2}" width="${o.width}" height="${o.height}"/><rect x="${-o.width / 2}" y="${-o.height / 2}" width="${o.width}" height="${o.height}" rx="6" fill="${o.backgroundColor || "#fff4a6"}" stroke="#c7b85e" stroke-width="2"/><path d="M${-o.width / 2 + 10} ${-o.height / 2 + 14}H${o.width / 2 - 10}" stroke="#d9ca70" stroke-width="1"/><text x="${-o.width / 2 + 12}" y="${-o.height / 2 + 34}" font-size="${o.textSize || 16}" font-weight="700" fill="${o.color || "#14211f"}">${lines.map((line, index) => `<tspan x="${-o.width / 2 + 12}" dy="${index ? (o.textSize || 16) + 5 : 0}">${escapeHtml(line)}</tspan>`).join("")}</text>`;
+    }
     else if (o.type === "shape") {
       const isCircle = o.label.includes("Circle") || o.label.includes("circle");
       const surface = `<rect class="drag-surface" data-drag-surface="shape" x="${-o.width / 2}" y="${-o.height / 2}" width="${o.width}" height="${o.height}"/>`;
@@ -523,6 +705,7 @@
       const d = o.curved ? `M0 0 Q${o.dx / 2} ${-Math.abs(o.dy || 80) - 80} ${o.dx} ${o.dy}` : `M0 0L${o.dx} ${o.dy}`;
       g.innerHTML = `<path data-drag-surface="arrow" d="${d}" fill="none" stroke="transparent" stroke-width="${Math.max(18, (o.thickness || 7) + 12)}" pointer-events="stroke"/><path d="${d}" fill="none" stroke="${o.color}" stroke-width="${o.thickness || 7}" stroke-linecap="round" stroke-dasharray="${dash}" marker-end="url(#arrowhead)" ${markerStart ? `marker-start="${markerStart}"` : ""}/>`;
     }
+    g.innerHTML += noteIndicatorMarkup(o);
     if (o.locked) g.setAttribute("data-locked", "true");
     return g;
   }
@@ -677,12 +860,20 @@
     $("#prop-aspect-lock").checked = o.aspectLocked !== false;
     $("#show-shadow").checked = !!o.showShadow;
     $("#show-shadow-label").classList.toggle("hidden", !isCharacter(o));
-    $("#prop-text-label").classList.toggle("hidden", o.type !== "text"); $("#prop-text").value = o.text || "";
+    $("#prop-text-label").classList.toggle("hidden", !["text", "sticky-note"].includes(o.type)); $("#prop-text").value = o.text || "";
+    $("#sticky-style-options").classList.toggle("hidden", o.type !== "sticky-note");
+    $("#prop-bg-color").value = o.backgroundColor || "#fff4a6";
+    $("#prop-text-size").value = o.textSize || 16;
+    $("#prop-note").value = o.note?.text || "";
+    $("#prop-note-indicator").checked = o.note?.showIndicator !== false;
+    $("#prop-note-export").checked = !!o.note?.showInExport;
     $("#prop-role").innerHTML = heroRoles.map(x => `<option>${x}</option>`).join(""); $("#prop-role").value = o.role || "Setter";
     fillPoses($("#prop-role").value, o.pose, o.team); $("#lock").textContent = o.locked ? "◉ Unlock" : "⌾ Lock";
-    $("#prop-team").disabled = !isCharacter(o); $("#prop-role").disabled = !isCharacter(o); $("#prop-pose").disabled = !isCharacter(o);
+    fillCharacterViews(o);
+    $("#prop-team").disabled = !isCharacter(o); $("#prop-role").disabled = !isCharacter(o); $("#prop-pose").disabled = !isCharacter(o); $("#prop-character-view").disabled = !isCharacter(o);
     $("#player-options").classList.toggle("hidden", !isCharacter(o));
-    $("#variant-picker").classList.toggle("hidden", !["player", "equipment"].includes(o.type));
+    $("#character-view-picker").classList.toggle("hidden", !isCharacter(o));
+    $("#variant-picker").classList.toggle("hidden", !["player", "equipment", "character"].includes(o.type));
     $("#prop-facing").value = o.facing || (o.mirrorX || o.mirror ? "Left" : "Right");
     $("#object-court-label").classList.toggle("hidden", isCourt);
     $("#prop-court").innerHTML = `<option value="">Unassigned</option>${frame().courts.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("")}`;
@@ -707,10 +898,19 @@
     return assetManifest.filter(asset =>
       asset.category === "player" && asset.role === roleKey
       && asset.team === assetTeam && asset.visualStyle === "professional"
+      && isDefaultCharacterViewValue(asset.view || asset.characterView)
+    );
+  }
+  function availablePlayerPoseAssets(team, role) {
+    const roleKey = roleKeys[role] || assetKey(role);
+    const assetTeam = roleKey === "coach" ? "Neutral" : (team === "B" ? "B" : "A");
+    return assetManifest.filter(asset =>
+      asset.category === "player" && asset.role === roleKey
+      && asset.team === assetTeam && asset.visualStyle === "professional"
     );
   }
   function fillPoses(role, value, team = state.team) {
-    const assets = availablePlayerAssets(team, role);
+    const assets = availablePlayerPoseAssets(team, role);
     const poses = assets.length ? [...new Set(assets.map(asset => asset.pose))] : (roles[role] || ["Default"]);
     const groups = professionalPoseGroups[roleKeys[role] || assetKey(role)] || {};
     const grouped = new Set();
@@ -725,15 +925,35 @@
     $("#prop-pose").innerHTML = html + remaining.map(pose => `<option>${escapeHtml(pose)}</option>`).join("");
     $("#prop-pose").value = poses.includes(value) ? value : poses[0];
   }
+  function fillCharacterViews(o) {
+    const assets = isCharacter(o) ? characterViewAssets(o.team, o.role, o.pose) : [];
+    const views = assets.map(asset => normalizeCharacterView(asset.view || asset.characterView));
+    if (!views.includes(normalizeCharacterView(o.characterView))) o.characterView = views[0] || defaultCharacterView;
+    $("#prop-character-view").innerHTML = assets.map(asset => {
+      const view = normalizeCharacterView(asset.view || asset.characterView);
+      return `<option value="${escapeHtml(view)}">${escapeHtml(view)}</option>`;
+    }).join("");
+    $("#prop-character-view").value = normalizeCharacterView(o.characterView);
+    renderCharacterViewPicker(o, assets);
+  }
   function propertyChange(key, value) {
     if (!state.selected.length) return; snapshot();
     state.selected.map(objectById).filter(Boolean).forEach(o => {
       if (key === "rotation" && o.type === "court") rotateCourtTo(o, value);
       else o[key] = key === "rotation" ? window.VPDInteraction.normalizeAngle(value) : value;
       if (key === "team") o.color = teamColors[value];
-      if (["team", "role", "pose"].includes(key) && isCharacter(o)) {
+      if (["team", "role", "pose", "characterView"].includes(key) && isCharacter(o)) {
         o.visualStyle = "professional";
-        const asset = playerAsset(o.team, o.role, o.pose);
+        o.characterView = normalizeCharacterView(o.characterView);
+        const views = availableCharacterViews(o.team, o.role, o.pose);
+        if (key !== "characterView" && !views.includes(o.characterView)) {
+          o.characterView = views[0] || defaultCharacterView;
+        }
+        const asset = playerAsset(o.team, o.role, o.pose, o.characterView);
+        if (!asset) {
+          o.characterView = defaultCharacterView;
+          return toast(`${value} view is not available for this pose yet`);
+        }
         o.assetId = asset.id;
         o.characterId = asset.characterId || o.characterId;
         if (key === "pose" || key === "role") {
@@ -775,6 +995,7 @@
       selected.assetId = asset.id;
       if (isCharacter(selected)) {
         selected.pose = asset.pose;
+        selected.characterView = normalizeCharacterView(asset.view || asset.characterView);
         selected.visualStyle = asset.visualStyle;
         selected.characterId = asset.characterId || selected.characterId;
         selected.width = Math.max(1, selected.height * asset.defaultWidth / asset.defaultHeight);
@@ -785,6 +1006,18 @@
       else selected.label = asset.variant || selected.label;
       renderAll();
     });
+  }
+  function renderCharacterViewPicker(o, assets = characterViewAssets(o.team, o.role, o.pose)) {
+    const picker = $("#character-view-picker");
+    if (!isCharacter(o)) {
+      picker.innerHTML = "";
+      return;
+    }
+    picker.innerHTML = assets.map(asset => {
+      const view = normalizeCharacterView(asset.view || asset.characterView);
+      return `<button type="button" class="variant-tile ${view === normalizeCharacterView(o.characterView) ? "active" : ""}" data-character-view="${escapeHtml(view)}" title="${escapeHtml(view)}"><img src="${asset.thumbnail}" alt="" loading="lazy"><small>${escapeHtml(view)}</small></button>`;
+    }).join("");
+    $$("[data-character-view]", picker).forEach(button => button.onclick = () => propertyChange("characterView", button.dataset.characterView));
   }
 
   function point(evt) {
@@ -924,10 +1157,66 @@
   function fillMetadataForm() {
     const m = state.metadata; Object.entries(m).forEach(([k, v]) => { const n = $(`#meta-${k}`); if (n) n.value = Array.isArray(v) ? v.join(", ") : v; });
   }
+  function markNotesDirty() {
+    $("#notes-save-status").textContent = "Unsaved changes";
+    $("#save-state").textContent = "Unsaved";
+    clearTimeout(markNotesDirty.timer);
+    markNotesDirty.timer = setTimeout(() => {
+      try { localStorage.setItem("vpd-notes-draft", JSON.stringify({ drillId: state.id, notes: state.notes, at: Date.now() })); } catch {}
+      $("#notes-save-status").textContent = "Draft saved locally";
+    }, 500);
+  }
+  function renderStructuredNotes() {
+    const sectionHtml = (key, title, checklist) => {
+      const items = state.notes[key] || [];
+      return `<div class="note-items" data-note-list="${key}">${items.map((item, index) => `<div class="note-item" data-note-item="${item.id}"><span class="note-order">${index + 1}</span>${checklist ? `<input type="checkbox" data-note-complete="${key}:${item.id}" ${item.completed ? "checked" : ""} aria-label="Complete item">` : ""}<input value="${escapeHtml(item.text)}" data-note-text="${key}:${item.id}" aria-label="${title} item"><button type="button" data-note-up="${key}:${item.id}" ${index === 0 ? "disabled" : ""}>Up</button><button type="button" data-note-down="${key}:${item.id}" ${index === items.length - 1 ? "disabled" : ""}>Down</button><button type="button" class="danger" data-note-delete="${key}:${item.id}">Delete</button></div>`).join("")}</div><button type="button" class="add-note-item" data-note-add="${key}">Add ${title.slice(0, -1).toLowerCase()}</button>`;
+    };
+    structuredNoteSections.forEach(([key, title, checklist]) => {
+      const target = key === "coachingPoints" ? $("#structured-notes") : $(`#note-section-${key}`);
+      if (target) target.innerHTML = sectionHtml(key, title, checklist);
+    });
+    $$("[data-note-add]").forEach(b => b.onclick = () => { const list = state.notes[b.dataset.noteAdd]; list.push(defaultNoteItem("", list.length)); renderStructuredNotes(); markNotesDirty(); });
+    $$("[data-note-text]").forEach(input => input.oninput = () => { const [key, id] = input.dataset.noteText.split(":"); const item = state.notes[key].find(x => x.id === id); if (item) item.text = input.value; markNotesDirty(); });
+    $$("[data-note-complete]").forEach(input => input.onchange = () => { const [key, id] = input.dataset.noteComplete.split(":"); const item = state.notes[key].find(x => x.id === id); if (item) item.completed = input.checked; markNotesDirty(); });
+    $$("[data-note-delete]").forEach(b => b.onclick = () => { const [key, id] = b.dataset.noteDelete.split(":"); state.notes[key] = state.notes[key].filter(x => x.id !== id).map((x, i) => ({ ...x, order: i })); renderStructuredNotes(); markNotesDirty(); });
+    $$("[data-note-up],[data-note-down]").forEach(b => b.onclick = () => { const attr = b.dataset.noteUp ? "noteUp" : "noteDown"; const [key, id] = b.dataset[attr].split(":"); const list = state.notes[key]; const i = list.findIndex(x => x.id === id); const j = attr === "noteUp" ? i - 1 : i + 1; if (i < 0 || j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; list.forEach((x, index) => x.order = index); renderStructuredNotes(); markNotesDirty(); });
+  }
+  function renderNotesPanel() {
+    state.notes = normalizeDrillNotes(state.notes, state.metadata);
+    $("#note-description").value = state.notes.description;
+    $("#note-equipmentNotes").value = state.notes.equipmentNotes;
+    $("#note-generalComments").value = state.notes.generalComments;
+    $("#note-postTrainingObservations").value = state.notes.postTrainingObservations;
+    renderStructuredNotes();
+  }
+  function bindNotesPanel() {
+    [["note-description","description"],["note-equipmentNotes","equipmentNotes"],["note-generalComments","generalComments"],["note-postTrainingObservations","postTrainingObservations"]].forEach(([id, key]) => {
+      $(`#${id}`).oninput = e => { state.notes[key] = e.target.value; markNotesDirty(); };
+    });
+  }
+  function setNotesCollapsed(collapsed, persist = true) {
+    const shell = $(".editor-shell");
+    if (!shell) return;
+    shell.classList.toggle("notes-collapsed", collapsed);
+    $("#coaching-notes-panel")?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (persist) localStorage.setItem("vpd-notes-collapsed", collapsed ? "1" : "0");
+  }
+  function restoreNotesPanelState() {
+    setNotesCollapsed(localStorage.getItem("vpd-notes-collapsed") === "1", false);
+  }
+  function practiceNotesFromForm() {
+    const notes = defaultPracticeNotes();
+    Object.keys(notes).forEach(key => { const n = $(`#practice-note-${key}`); if (n) notes[key] = n.value; });
+    return notes;
+  }
+  function fillPracticeNotes(notes) {
+    const data = normalizePracticeNotes(notes);
+    Object.entries(data).forEach(([key, value]) => { const n = $(`#practice-note-${key}`); if (n) n.value = value; });
+  }
   function drillPayload(asNew = false) {
     const now = new Date().toISOString();
     frame().court = legacyCourtSettings(frame().courts[0]);
-    return { id: asNew || !state.id ? uid() : state.id, schema_version: 3, metadata: state.metadata, created_at: asNew || !state.created_at ? now : state.created_at, modified_at: now, court: frame().court, frames: state.frames, thumbnail: null };
+    return { id: asNew || !state.id ? uid() : state.id, schema_version: 4, metadata: state.metadata, notes: normalizeDrillNotes(state.notes, state.metadata), created_at: asNew || !state.created_at ? now : state.created_at, modified_at: now, court: frame().court, frames: state.frames, thumbnail: null };
   }
   async function saveDrill(asNew = false) {
     if (!state.metadata.name?.trim() || state.metadata.name === "Untitled drill") { fillMetadataForm(); $("#drill-dialog").showModal(); toast("Give the drill a name before saving"); return; }
@@ -935,19 +1224,19 @@
     $("#save-state").textContent = "Saving…";
     const res = await fetch(exists ? `/api/drills/${state.id}` : "/api/drills", { method: exists ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (!res.ok) { toast("Could not save drill"); $("#save-state").textContent = "Save failed"; return; }
-    const saved = await res.json(); state.id = saved.id; state.created_at = saved.created_at; $("#save-state").textContent = "Saved"; toast("Drill saved"); await refreshData();
+    const saved = await res.json(); state.id = saved.id; state.created_at = saved.created_at; state.notes = normalizeDrillNotes(saved.notes, saved.metadata); $("#save-state").textContent = "Saved"; $("#notes-save-status").textContent = "Saved with drill"; localStorage.removeItem("vpd-notes-draft"); toast("Drill saved"); await refreshData();
   }
   async function loadDrill(id) {
     const res = await fetch(`/api/drills/${id}`); if (!res.ok) return toast("Drill not found");
     const d = await res.json();
     const migratedFrames = (d.frames?.length ? d.frames : [emptyFrame()]).map(migrateFrame);
-    state = { ...state, id: d.id, metadata: d.metadata, created_at: d.created_at, frames: migratedFrames, frameIndex: 0, selected: [], history: [], future: [], zoom: .72, panX: 0, panY: 0 };
-    syncCourtChecks(); showView("editor"); renderAll(); setTimeout(fitAll, 0); toast(`Opened “${d.metadata.name}”`);
+    state = { ...state, id: d.id, metadata: d.metadata, notes: normalizeDrillNotes(d.notes, d.metadata), created_at: d.created_at, frames: migratedFrames, frameIndex: 0, selected: [], history: [], future: [], zoom: .72, panX: 0, panY: 0 };
+    syncCourtChecks(); showView("editor"); renderNotesPanel(); renderAll(); setTimeout(fitAll, 0); toast(`Opened ${d.metadata.name}`);
   }
   function newDrill() {
     if (!confirm("Start a new drill? Unsaved changes will be lost.")) return;
-    state = { ...state, id: null, metadata: { name: "Untitled drill", objective: "", tags: [] }, created_at: null, frames: [emptyFrame()], frameIndex: 0, selected: [], history: [], future: [] };
-    syncCourtChecks(); renderAll(); setTimeout(fitAll, 0); toast("New drill ready");
+    state = { ...state, id: null, metadata: { name: "Untitled drill", objective: "", tags: [] }, notes: defaultDrillNotes(), created_at: null, frames: [emptyFrame()], frameIndex: 0, selected: [], history: [], future: [] };
+    syncCourtChecks(); renderNotesPanel(); renderAll(); setTimeout(fitAll, 0); toast("New drill ready");
   }
 
   async function refreshData() {
@@ -959,7 +1248,9 @@
   function renderLibrary() {
     const q = ($("#drill-search")?.value || "").toLowerCase(), filter = $("#drill-filter")?.value || "";
     const list = cachedDrills.filter(d => {
-      const hay = `${d.metadata.name} ${d.metadata.objective} ${(d.metadata.tags || []).join(" ")}`.toLowerCase();
+      const notes = normalizeDrillNotes(d.notes, d.metadata);
+      const structured = structuredNoteSections.flatMap(([key]) => notes[key].map(item => item.text)).join(" ");
+      const hay = `${d.metadata.name} ${d.metadata.objective} ${(d.metadata.tags || []).join(" ")} ${notes.description} ${notes.generalComments} ${structured}`.toLowerCase();
       return hay.includes(q) && (!filter || hay.includes(filter.toLowerCase()));
     });
     $("#drill-grid").innerHTML = list.length ? list.map(d => `<article class="drill-card" data-card="${d.id}"><div class="drill-thumb"><div></div></div><div class="card-eyebrow"><span>${d.metadata.players || "—"} players · ${d.metadata.duration || "—"} min</span><span>${new Date(d.modified_at).toLocaleDateString()}</span></div><h3>${escapeHtml(d.metadata.name)}</h3><p>${escapeHtml(d.metadata.objective || "No objective added")}</p><div class="tag-list">${(d.metadata.tags || []).slice(0,4).map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join("")}</div><div class="card-actions"><button data-open="${d.id}">Open</button><button data-add="${d.id}">Add to practice</button><button data-copy="${d.id}">Duplicate</button><button class="danger" data-delete="${d.id}">Delete</button></div></article>`).join("") : `<div class="empty-library"><h3>No drills found</h3><p>Create a visual drill and save it to begin your library.</p></div>`;
@@ -984,13 +1275,19 @@
   }
   async function savePractice() {
     const name = $("#practice-name").value.trim(); if (!name) return toast("Practice name is required");
-    const now = new Date().toISOString(), payload = { id: currentPractice.id || uid(), schema_version: 1, name, date: $("#practice-date").value || null, team: $("#practice-team").value, main_objective: $("#practice-objective").value, notes: $("#practice-notes").value, sections: [{ name: "Practice plan", drills: currentPractice.items }], created_at: currentPractice.created_at || now, modified_at: now };
+    const practiceNotes = practiceNotesFromForm();
+    const now = new Date().toISOString(), payload = { id: currentPractice.id || uid(), schema_version: 2, name, date: $("#practice-date").value || null, team: $("#practice-team").value, main_objective: $("#practice-objective").value, notes: $("#practice-notes").value, practiceNotes, sections: [{ name: "Practice plan", drills: currentPractice.items }], created_at: currentPractice.created_at || now, modified_at: now };
     const res = await fetch(currentPractice.id ? `/api/practices/${currentPractice.id}` : "/api/practices", { method: currentPractice.id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    const saved = await res.json(); currentPractice.id = saved.id; currentPractice.created_at = saved.created_at; toast("Practice saved"); refreshData();
+    const saved = await res.json(); currentPractice.id = saved.id; currentPractice.created_at = saved.created_at; currentPractice.practiceNotes = normalizePracticeNotes(saved.practiceNotes, saved); fillPracticeNotes(currentPractice.practiceNotes); toast("Practice saved"); refreshData();
   }
   function renderPractices(practices) {
-    $("#practice-grid").innerHTML = practices.length ? practices.map(p => `<article class="practice-card"><div class="card-eyebrow"><span>${p.date || "No date"}</span><span>${p.team || ""}</span></div><h3>${escapeHtml(p.name)}</h3><p>${escapeHtml(p.main_objective || "No objective")}</p><div class="card-actions"><button data-open-practice="${p.id}">Open</button><button data-copy-practice="${p.id}">Duplicate</button><button class="danger" data-delete-practice="${p.id}">Delete</button></div></article>`).join("") : `<div class="empty-library"><p>No saved practices yet.</p></div>`;
-    $$("[data-open-practice]").forEach(b => b.onclick = async () => { const p = await fetch(`/api/practices/${b.dataset.openPractice}`).then(r => r.json()); currentPractice = { id: p.id, created_at: p.created_at, items: p.sections?.[0]?.drills || [] }; $("#practice-name").value=p.name; $("#practice-date").value=p.date||""; $("#practice-team").value=p.team; $("#practice-objective").value=p.main_objective; $("#practice-notes").value=p.notes; renderPracticeItems(); scrollTo(0,0); });
+    const query = ($("#practice-search")?.value || "").toLowerCase();
+    const visible = practices.filter(p => {
+      const notes = normalizePracticeNotes(p.practiceNotes, p);
+      return `${p.name} ${p.main_objective} ${notes.mainObjective} ${notes.technicalObjective} ${notes.tacticalObjective} ${notes.physicalObjective} ${notes.importantNotes} ${notes.generalComments}`.toLowerCase().includes(query);
+    });
+    $("#practice-grid").innerHTML = visible.length ? visible.map(p => `<article class="practice-card"><div class="card-eyebrow"><span>${p.date || "No date"}</span><span>${p.team || ""}</span></div><h3>${escapeHtml(p.name)}</h3><p>${escapeHtml(p.main_objective || normalizePracticeNotes(p.practiceNotes, p).mainObjective || "No objective")}</p><div class="card-actions"><button data-open-practice="${p.id}">Open</button><button data-copy-practice="${p.id}">Duplicate</button><button class="danger" data-delete-practice="${p.id}">Delete</button></div></article>`).join("") : `<div class="empty-library"><p>No saved practices yet.</p></div>`;
+    $$("[data-open-practice]").forEach(b => b.onclick = async () => { const p = await fetch(`/api/practices/${b.dataset.openPractice}`).then(r => r.json()); currentPractice = { id: p.id, created_at: p.created_at, items: p.sections?.[0]?.drills || [], practiceNotes: normalizePracticeNotes(p.practiceNotes, p) }; $("#practice-name").value=p.name; $("#practice-date").value=p.date||""; $("#practice-team").value=p.team; $("#practice-objective").value=p.main_objective; $("#practice-notes").value=p.notes; fillPracticeNotes(currentPractice.practiceNotes); renderPracticeItems(); scrollTo(0,0); });
     $$("[data-copy-practice]").forEach(b => b.onclick = async()=>{await fetch(`/api/practices/${b.dataset.copyPractice}/duplicate`,{method:"POST"});refreshData();toast("Practice duplicated")});
     $$("[data-delete-practice]").forEach(b => b.onclick = async()=>{if(confirm("Delete this practice?")){await fetch(`/api/practices/${b.dataset.deletePractice}`,{method:"DELETE"});refreshData()}});
   }
@@ -1007,14 +1304,14 @@
     })));
   }
 
-  async function exportPng() {
-    const mode = $("#export-mode").value;
+  async function renderedFrameDataUrl(mode = "all") {
     const court = selectedCourt();
-    if (mode === "selected" && !court) return toast("Select a court to export");
+    if (mode === "selected" && !court) throw new Error("Select a court to export");
     await waitForVisualAssets();
     const previousSelection = [...state.selected]; state.selected = []; renderSelection();
     const clone = svg.cloneNode(true), cloneViewport = clone.querySelector("#viewport");
     clone.querySelector("#selection-layer").innerHTML = "";
+    clone.querySelectorAll(".note-indicator:not(.export-note)").forEach(node => node.remove());
     let box = { x: 0, y: 0, w: WORKSPACE.width, h: WORKSPACE.height };
     if (mode !== "viewport") {
       cloneViewport.removeAttribute("transform");
@@ -1054,16 +1351,102 @@
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#dfe4df"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const a = document.createElement("a");
-    a.download = `${(state.metadata.name || "drill").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${mode}-frame-${state.frameIndex + 1}.png`;
-    a.href = canvas.toDataURL("image/png");
-    a.click();
     URL.revokeObjectURL(url);
     state.selected = previousSelection; renderSelection();
+    return canvas.toDataURL("image/png");
+  }
+
+  async function exportPng() {
+    const mode = $("#export-mode").value;
+    let href = "";
+    try {
+      $("#save-state").textContent = "Preparing PNG...";
+      href = await renderedFrameDataUrl(mode);
+    } catch (error) {
+      $("#save-state").textContent = "Ready";
+      return toast(error.message || "Could not export PNG");
+    }
+    const a = document.createElement("a");
+    a.download = `${(state.metadata.name || "drill").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${mode}-frame-${state.frameIndex + 1}.png`;
+    a.href = href;
+    a.click();
     $("#save-state").textContent = "Ready";
     toast(`PNG exported: ${mode}`);
   }
 
+  async function captureFrameImages(sourceFrames, onlyIndex = null) {
+    const original = { frames: state.frames, frameIndex: state.frameIndex, selected: [...state.selected] };
+    const targets = onlyIndex === null ? sourceFrames.map((item, index) => [item, index]) : [[sourceFrames[onlyIndex], onlyIndex]];
+    const results = [];
+    try {
+      state.selected = [];
+      for (const [item, index] of targets) {
+        state.frames = [migrateFrame(deep(item))];
+        state.frameIndex = 0;
+        renderAll();
+        results.push({ id: item.id || "", name: item.name || `Frame ${index + 1}`, image: await renderedFrameDataUrl("all") });
+      }
+    } finally {
+      state.frames = original.frames;
+      state.frameIndex = original.frameIndex;
+      state.selected = original.selected;
+      renderAll();
+    }
+    return results;
+  }
+
+  async function exportPowerPoint() {
+    const scope = $("#pptx-export-scope").value;
+    $("#save-state").textContent = "Preparing PowerPoint...";
+    try {
+      let endpoint = "/api/exports/powerpoint/drill";
+      let payload;
+      if (scope === "practice") {
+        const name = $("#practice-name").value.trim() || currentPractice.name || "Practice Plan";
+        const sections = [{ name: "Practice plan", drills: currentPractice.items }];
+        const practice = { id: currentPractice.id || uid(), name, date: $("#practice-date").value || null, team: $("#practice-team").value, main_objective: $("#practice-objective").value, notes: $("#practice-notes").value, practiceNotes: practiceNotesFromForm(), sections };
+        const drills = [];
+        for (const item of currentPractice.items) {
+          const drill = cachedDrills.find(d => d.id === item.drill_id);
+          if (!drill) continue;
+          drills.push({ drill, frames: await captureFrameImages(drill.frames || []) });
+        }
+        if (!drills.length) throw new Error("Add at least one saved drill to the practice first");
+        endpoint = "/api/exports/powerpoint/practice";
+        payload = { practice, drills };
+      } else {
+        payload = { drill: drillPayload(false), frames: await captureFrameImages(state.frames, scope === "frame" ? state.frameIndex : null) };
+      }
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "PowerPoint export failed");
+      $("#save-state").textContent = "Ready";
+      toast(`PowerPoint exported: ${result.path}`);
+    } catch (error) {
+      $("#save-state").textContent = "Ready";
+      toast(error.message || "PowerPoint export failed");
+    }
+  }
+
+  function noteSectionHtml(title, value, hideEmpty) {
+    const empty = Array.isArray(value) ? !value.length : !String(value || "").trim();
+    if (empty && hideEmpty) return "";
+    if (Array.isArray(value)) return `<section><h3>${title}</h3><ol>${value.map(item => `<li>${escapeHtml(item.text)}</li>`).join("")}</ol></section>`;
+    return `<section><h3>${title}</h3><p>${escapeHtml(value || "")}</p></section>`;
+  }
+  function drillNotesPrintHtml(hideEmpty = true) {
+    const notes = normalizeDrillNotes(state.notes, state.metadata);
+    return `<article class="print-notes"><h2>Coaching Notes</h2>
+      ${noteSectionHtml("Drill Description", notes.description, hideEmpty)}
+      ${noteSectionHtml("Coaching Points", notes.coachingPoints, hideEmpty)}
+      ${noteSectionHtml("Common Mistakes", notes.commonMistakes, hideEmpty)}
+      ${noteSectionHtml("Progressions", notes.progressions, hideEmpty)}
+      ${noteSectionHtml("Regressions", notes.regressions, hideEmpty)}
+      ${noteSectionHtml("Variations", notes.variations, hideEmpty)}
+      ${noteSectionHtml("Equipment Notes", notes.equipmentNotes, hideEmpty)}
+      ${noteSectionHtml("General Comments", notes.generalComments, hideEmpty)}
+    </article>`;
+  }
   function printDrill() {
     const mode = $("#print-mode").value;
     const pages = $("#print-pages"); pages.innerHTML = "";
@@ -1074,25 +1457,108 @@
       const box = court ? workspaceBounds("selected", court) : workspaceBounds("courts");
       if (court) clone.querySelectorAll("[data-court-id]").forEach(node => { if (node.getAttribute("data-court-id") !== court.id) node.remove(); });
       clone.querySelector("#selection-layer").innerHTML = "";
+      clone.querySelectorAll(".note-indicator:not(.export-note)").forEach(node => node.remove());
       clone.setAttribute("viewBox", `${box.x} ${box.y} ${box.w} ${box.h}`);
       clone.removeAttribute("width"); clone.removeAttribute("height");
       const page = document.createElement("section"); page.className = "print-page"; page.append(clone); pages.append(page);
     });
+    if ($("#print-include-notes").checked) {
+      const notesPage = document.createElement("section");
+      notesPage.className = "print-page print-notes-page";
+      notesPage.innerHTML = drillNotesPrintHtml($("#print-hide-empty").checked);
+      pages.append(notesPage);
+    }
     document.body.dataset.printMode = mode;
     window.print();
   }
 
   function renderAssetLibrary() {
+    const grid = $("#asset-grid");
+    if (!grid) return;
     const query = ($("#asset-search")?.value || "").toLowerCase();
     const category = $("#asset-category")?.value || "";
+    const style = $("#asset-style")?.value || "";
     const team = $("#asset-team")?.value || "";
-    const assets = assetManifest.filter(asset => {
+    const role = $("#asset-role")?.value || "";
+    const view = $("#asset-view")?.value || "";
+    const assets = assetLibraryManifest.filter(asset => {
       if (asset.category === "fallback" || asset.visualStyle === "legacy_vector") return false;
-      const haystack = `${asset.id} ${asset.role || ""} ${asset.pose || ""} ${asset.variant || ""} ${asset.equipmentType || ""} ${asset.team || ""}`.toLowerCase();
-      return haystack.includes(query) && (!category || asset.category === category) && (!team || asset.team === team);
+      const assetView = normalizeCharacterView(asset.view || asset.characterView);
+      const haystack = `${asset.id} ${asset.role || ""} ${asset.pose || ""} ${assetView} ${asset.variant || ""} ${asset.equipmentType || ""} ${asset.team || ""}`.toLowerCase();
+      return haystack.includes(query) && (!category || asset.category === category) && (!style || asset.visualStyle === style) && (!team || asset.team === team) && (!role || asset.role === role) && (!view || assetView === view);
     });
-    $("#asset-summary").textContent = `${assets.length} of ${assetManifest.length - 1} assets`;
-    $("#asset-grid").innerHTML = assets.map(asset => `<article class="asset-card" data-review-asset="${asset.id}"><img src="${asset.thumbnail}" alt="${escapeHtml(asset.pose || asset.variant || asset.id)}" loading="lazy"><b>${escapeHtml(asset.pose || asset.variant || asset.id)}</b><small>${escapeHtml([asset.team, asset.role || asset.equipmentType || asset.category].filter(Boolean).join(" · "))}</small></article>`).join("");
+    const visibleAssets = assets;
+    $("#asset-summary").textContent = `${visibleAssets.length} shown · ${assets.length} matching assets`;
+    renderAssetDiagnostics(visibleAssets.length);
+    if (!visibleAssets.length) {
+      grid.innerHTML = `<div class="asset-empty-state"><h2>No assets match the current filters.</h2><p>Valid assets are still loaded. Reset the filters or show all released Professional assets.</p><div><button class="btn ghost" data-asset-reset-filters>Reset Filters</button><button class="btn primary" data-asset-show-professional>Show All Professional Assets</button></div></div>`;
+      $$("[data-asset-reset-filters]").forEach(button => button.onclick = resetAssetFilters);
+      $$("[data-asset-show-professional]").forEach(button => button.onclick = showAllProfessionalAssets);
+      return;
+    }
+    const selectable = asset => asset.category === "player" && asset.visualStyle === "professional";
+    grid.innerHTML = visibleAssets.map(asset => `<article class="asset-card ${selectedFigureAssetIds.has(asset.id) ? "selected" : ""}" data-review-asset="${asset.id}"><img src="${asset.thumbnail}" alt="${escapeHtml(asset.pose || asset.variant || asset.id)}" loading="lazy" decoding="async" onerror="this.closest('.asset-card')?.classList.add('asset-card-error');this.removeAttribute('src')"><b>${escapeHtml(asset.pose || asset.variant || asset.id)}</b><small>${escapeHtml([asset.team, asset.role || asset.equipmentType || asset.category].filter(Boolean).join(" · "))}</small>${selectable(asset) ? `<label class="asset-select"><input type="checkbox" data-figure-select="${asset.id}" ${selectedFigureAssetIds.has(asset.id) ? "checked" : ""}> Select</label>` : ""}</article>`).join("");
+    $$("[data-figure-select]").forEach(input => input.onchange = () => {
+      if (input.checked) selectedFigureAssetIds.add(input.dataset.figureSelect);
+      else selectedFigureAssetIds.delete(input.dataset.figureSelect);
+      input.closest(".asset-card")?.classList.toggle("selected", input.checked);
+    });
+  }
+  function renderAssetDiagnostics(currentFilterResult = 0) {
+    const node = $("#asset-diagnostics");
+    if (!node) return;
+    const skipped = assetDiagnostics.skippedEntries || 0;
+    const invalid = assetDiagnostics.invalidEntries || 0;
+    const filtered = assetDiagnostics.filteredEntries || 0;
+    const missingThumbs = assetDiagnostics.missingThumbnails || 0;
+    const missingRuntime = assetDiagnostics.missingRuntimeFiles || 0;
+    const loaded = assetDiagnostics.loadedAssets || assetDiagnostics.professionalAssetsLoaded || 0;
+    const released = assetDiagnostics.releasedAssets || assetDiagnostics.professionalAssetsReleased || 0;
+    const hidden = assetDiagnostics.hiddenAssets || assetDiagnostics.professionalAssetsHidden || 0;
+    node.innerHTML = `<details><summary>Developer Diagnostics</summary><p>Loaded assets: ${loaded} · Released assets: ${released} · Hidden assets: ${hidden} · Skipped assets: ${skipped} · Current filter result: ${currentFilterResult}</p><p>Professional assets loaded: ${assetDiagnostics.professionalAssetsLoaded || 0} · Professional assets released: ${assetDiagnostics.professionalAssetsReleased || 0} · Professional assets hidden: ${assetDiagnostics.professionalAssetsHidden || 0} · 45° Back loaded: ${assetDiagnostics.back45AssetsLoaded || 0} · 45° Back released: ${assetDiagnostics.back45AssetsReleased || 0} · 45° Back hidden: ${assetDiagnostics.back45AssetsHidden || 0} · Invalid: ${invalid} · Filtered: ${filtered} · Missing thumbnails: ${missingThumbs} · Missing runtime files: ${missingRuntime}</p><pre>${escapeHtml((assetDiagnostics.skippedAssets || []).slice(0, 80).map(item => `${item.id}: ${item.reason}`).join("\n") || "No skipped assets.")}</pre></details>`;
+  }
+  function resetAssetFilters() {
+    $("#asset-search").value = "";
+    $("#asset-category").value = "";
+    $("#asset-style").value = "professional";
+    $("#asset-team").value = "";
+    $("#asset-role").value = "";
+    $("#asset-view").value = "";
+    renderAssetLibrary();
+  }
+  function showAllProfessionalAssets() {
+    resetAssetFilters();
+  }
+  function openPlayerFigureExportDialog() {
+    $("#player-figure-export-result").classList.add("hidden");
+    $("#player-figure-export-path").textContent = "";
+    $("#player-figure-export-dialog").showModal();
+  }
+  function playerFigureExportPayload() {
+    const selection = $('input[name="player-figure-selection"]:checked')?.value || "all";
+    const format = $('input[name="player-figure-format"]:checked')?.value || "pptx";
+    const payload = { format, mode: selection === "all" ? "all" : selection === "selected" ? "selected" : "role" };
+    if (payload.mode === "role") payload.role = selection;
+    if (payload.mode === "selected") payload.assetIds = [...selectedFigureAssetIds];
+    return payload;
+  }
+  async function exportPlayerFigures() {
+    const payload = playerFigureExportPayload();
+    if (payload.mode === "selected" && !payload.assetIds.length) return toast("Select one or more professional player figures first");
+    $("#save-state").textContent = "Exporting figures...";
+    try {
+      const response = await fetch("/api/exports/player-figures", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Player figure export failed");
+      $("#save-state").textContent = "Ready";
+      $("#player-figure-export-result").classList.remove("hidden");
+      $("#player-figure-export-path").textContent = result.folder;
+      $("#open-player-figure-folder").dataset.folder = result.folder;
+      toast(`Player figures exported: ${result.folder}`);
+    } catch (error) {
+      $("#save-state").textContent = "Ready";
+      toast(error.message || "Player figure export failed");
+    }
   }
   function showView(name) {
     $$(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
@@ -1104,12 +1570,27 @@
 
   function bind() {
     $$("[data-view]").forEach(b => b.onclick = () => showView(b.dataset.view));
+    $$("[data-right-tab]").forEach(b => b.onclick = () => {
+      const tab = b.dataset.rightTab;
+      $$("[data-right-tab]").forEach(x => x.classList.toggle("active", x === b));
+      $$(".right-tab-panel").forEach(panel => panel.classList.toggle("active", panel.id === `right-tab-${tab}`));
+      $("#right-panel-title").textContent = tab === "notes" ? "Coaching Notes" : tab === "info" ? "Drill Info" : "Properties";
+    });
+    $$("[data-practice-tab]").forEach(b => b.onclick = () => {
+      const tab = b.dataset.practiceTab;
+      $$("[data-practice-tab]").forEach(x => x.classList.toggle("active", x === b));
+      $$(".practice-tab-panel").forEach(panel => panel.classList.toggle("active", panel.id === `practice-tab-${tab}`));
+    });
+    $("#open-drill-info").onclick = () => { fillMetadataForm(); $("#drill-dialog").showModal(); };
+    $("#collapse-notes-panel").onclick = () => setNotesCollapsed(true);
+    $("#expand-notes-panel").onclick = () => setNotesCollapsed(false);
+    bindNotesPanel();
     $("#new-drill").onclick = newDrill; $("#save-drill").onclick = () => saveDrill(false);
     $("#undo").onclick = undo; $("#redo").onclick = redo; $("#zoom-in").onclick=()=>{state.zoom=clamp(state.zoom+.1,.18,3);renderView()}; $("#zoom-out").onclick=()=>{state.zoom=clamp(state.zoom-.1,.18,3);renderView()};
     $("#fit-view").onclick = fitAll; $("#reset-view").onclick=()=>{state.zoom=1;state.panX=0;state.panY=0;renderView()};
     $("#drill-info-btn").onclick = () => { fillMetadataForm(); $("#drill-dialog").showModal(); };
     $("#apply-meta").onclick = e => { e.preventDefault(); const m=metadataFromForm(); if(!m.name.trim())return toast("Drill name is required");state.metadata=m;$("#drill-dialog").close();toast("Drill details applied") };
-    $("#export-png").onclick=exportPng; $("#print-drill").onclick=printDrill;
+    $("#export-png").onclick=exportPng; $("#export-pptx").onclick=exportPowerPoint; $("#print-drill").onclick=printDrill;
     $("#add-court").onclick=()=>addCourt();
     $("#duplicate-court").onclick=()=>duplicateCourt(false);
     $("#duplicate-court-contents").onclick=()=>duplicateCourt(true);
@@ -1124,7 +1605,7 @@
     $("#lock").onclick=()=>propertyChange("locked",!objectById(state.selected[0])?.locked);
     $("#bring-front").onclick=()=>{snapshot();const courtsMode=!!selectedCourt(),list=courtsMode?frame().courts:frame().objects,selected=list.filter(o=>state.selected.includes(o.id)),result=list.filter(o=>!state.selected.includes(o.id)).concat(selected);if(courtsMode)frame().courts=result;else{const top=Math.max(0,...list.map(o=>o.zIndex||0))+1;selected.forEach((o,index)=>o.zIndex=top+index);frame().objects=result}renderAll()};
     $("#send-back").onclick=()=>{snapshot();const courtsMode=!!selectedCourt(),list=courtsMode?frame().courts:frame().objects,selected=list.filter(o=>state.selected.includes(o.id)),result=selected.concat(list.filter(o=>!state.selected.includes(o.id)));if(courtsMode)frame().courts=result;else{const back=Math.min(0,...list.map(o=>o.zIndex||0))-selected.length;selected.forEach((o,index)=>o.zIndex=back+index);frame().objects=result}renderAll()};
-    [["prop-team","team"],["prop-facing","facing"],["prop-scale","scale"],["prop-opacity","opacity"],["prop-color","color"],["prop-pose","pose"]].forEach(([id,key])=> $(`#${id}`).onchange=e=>propertyChange(key,["scale","opacity"].includes(key)?+e.target.value:e.target.value));
+    [["prop-team","team"],["prop-facing","facing"],["prop-character-view","characterView"],["prop-scale","scale"],["prop-opacity","opacity"],["prop-color","color"],["prop-pose","pose"],["prop-bg-color","backgroundColor"],["prop-text-size","textSize"]].forEach(([id,key])=> $(`#${id}`).onchange=e=>propertyChange(key,["scale","opacity","textSize"].includes(key)?+e.target.value:e.target.value));
     $("#prop-rotation").onfocus=()=>snapshot();
     $("#prop-rotation").oninput=e=>{
       const o=objectById(state.selected[0]);if(!o)return;
@@ -1144,9 +1625,13 @@
       renderAll();
     });
     $("#prop-text").onfocus=()=>snapshot();
-    $("#prop-text").oninput=e=>{const o=objectById(state.selected[0]);if(o?.type==="text"){o.text=e.target.value;renderObjects()}};
+    $("#prop-text").oninput=e=>{const o=objectById(state.selected[0]);if(["text","sticky-note"].includes(o?.type)){o.text=e.target.value;renderObjects()}};
     $("#prop-text").onblur=e=>{if(!e.target.value.trim()){const o=objectById(state.selected[0]);if(o?.type==="text"){o.text="Instruction";e.target.value=o.text;renderObjects()}}};
-    $("#prop-role").onchange=e=>{snapshot();const o=objectById(state.selected[0]);o.role=e.target.value;o.pose=heroDefaults[o.role];o.team=o.role==="Coach"?"Neutral":(o.team==="Neutral"?"A":o.team);const asset=playerAsset(o.team,o.role,o.pose);o.assetId=asset.id;o.visualStyle="professional";o.characterId=asset.characterId||o.characterId;delete o.isProfessionalFallback;renderAll()};
+    $("#prop-note").onfocus=()=>snapshot();
+    $("#prop-note").oninput=e=>{const o=objectById(state.selected[0]);if(!o)return;o.note=normalizeObjectNote(o.note);o.note.text=e.target.value;renderObjects();};
+    $("#prop-note-indicator").onchange=e=>{const o=objectById(state.selected[0]);if(!o)return;propertyChange("note", {...normalizeObjectNote(o.note), showIndicator:e.target.checked});};
+    $("#prop-note-export").onchange=e=>{const o=objectById(state.selected[0]);if(!o)return;propertyChange("note", {...normalizeObjectNote(o.note), showInExport:e.target.checked});};
+    $("#prop-role").onchange=e=>{snapshot();const o=objectById(state.selected[0]);o.role=e.target.value;o.pose=heroDefaults[o.role];o.team=o.role==="Coach"?"Neutral":(o.team==="Neutral"?"A":o.team);o.characterView=normalizeCharacterView(o.characterView);const asset=playerAsset(o.team,o.role,o.pose,o.characterView);o.assetId=asset.id;o.visualStyle="professional";o.characterId=asset.characterId||o.characterId;delete o.isProfessionalFallback;renderAll()};
     $("#prop-court").onchange=e=>propertyChange("courtId",e.target.value||null);
     $("#prop-court-name").onchange=e=>{const c=selectedCourt();if(!c)return;snapshot();c.name=e.target.value.trim()||c.name;renderAll()};
     $("#prop-court-style").onchange=e=>propertyChange("style",e.target.value);
@@ -1164,10 +1649,13 @@
     $("#move-frame-left").onclick=()=>{const i=state.frameIndex;if(i===0)return;snapshot();[state.frames[i-1],state.frames[i]]=[state.frames[i],state.frames[i-1]];state.frameIndex--;renderAll()};
     $("#move-frame-right").onclick=()=>{const i=state.frameIndex;if(i===state.frames.length-1)return;snapshot();[state.frames[i+1],state.frames[i]]=[state.frames[i],state.frames[i+1]];state.frameIndex++;renderAll()};
     $("#prev-frame").onclick=()=>{state.frameIndex=Math.max(0,state.frameIndex-1);state.selected=[];syncCourtChecks();renderAll()}; $("#next-frame").onclick=()=>{state.frameIndex=Math.min(state.frames.length-1,state.frameIndex+1);state.selected=[];syncCourtChecks();renderAll()};
-    $("#drill-search").oninput=renderLibrary; $("#drill-filter").onchange=renderLibrary; $("#save-practice").onclick=savePractice;
+    $("#drill-search").oninput=renderLibrary; $("#drill-filter").onchange=renderLibrary; $("#practice-search").oninput=()=>refreshData(); $("#save-practice").onclick=savePractice;
     $("#library-new").onclick=()=>{showView("editor");newDrill()};
-    $("#new-practice").onclick=()=>{currentPractice={id:null,items:[]};$("#practice-form").reset();renderPracticeItems()};
-    $("#asset-search").oninput=renderAssetLibrary; $("#asset-category").onchange=renderAssetLibrary; $("#asset-team").onchange=renderAssetLibrary;
+    $("#new-practice").onclick=()=>{currentPractice={id:null,items:[],practiceNotes:defaultPracticeNotes()};$("#practice-form").reset();fillPracticeNotes(currentPractice.practiceNotes);renderPracticeItems()};
+    $("#asset-search").oninput=renderAssetLibrary; $("#asset-category").onchange=renderAssetLibrary; $("#asset-style").onchange=renderAssetLibrary; $("#asset-team").onchange=renderAssetLibrary; $("#asset-role").onchange=renderAssetLibrary; $("#asset-view").onchange=renderAssetLibrary;
+    $("#export-player-figures").onclick=openPlayerFigureExportDialog;
+    $("#run-player-figure-export").onclick=e=>{e.preventDefault();exportPlayerFigures()};
+    $("#open-player-figure-folder").onclick=e=>{const folder=e.currentTarget.dataset.folder;if(folder)window.open(`file:///${folder.replaceAll("\\\\","/")}`,"_blank")};
     document.addEventListener("keydown", e => {
       if (["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)) return;
       if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && selectedCourt()) {
@@ -1187,7 +1675,9 @@
   async function init() {
     await loadAssetManifest();
     state.frames = state.frames.map(migrateFrame);
-    buildPalette(); bind(); syncCourtChecks(); renderAll(); setTimeout(fitAll, 0); renderPracticeItems(); renderAssetLibrary(); refreshData();
+    buildPalette(); bind(); restoreNotesPanelState(); syncCourtChecks(); renderNotesPanel(); fillPracticeNotes(currentPractice.practiceNotes); renderAll(); setTimeout(fitAll, 0); renderPracticeItems(); refreshData();
+    if ($("#asset-summary")) $("#asset-summary").textContent = "Asset Library loads when opened";
+    if ($("#asset-grid")) $("#asset-grid").innerHTML = "";
   }
   init().catch(error => { console.error(error); toast("Visual assets could not be loaded"); });
 })();

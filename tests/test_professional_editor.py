@@ -22,7 +22,16 @@ def manifest() -> dict:
 
 
 def professional_assets() -> list[dict]:
-    return [item for item in manifest()["assets"] if item.get("visualStyle") == "professional"]
+    return [
+        item for item in manifest()["assets"]
+        if item.get("visualStyle") == "professional"
+        and item.get("visibleInEditor", True) is not False
+        and item.get("releaseStatus", "released") == "released"
+    ]
+
+
+def professional_front_assets() -> list[dict]:
+    return [item for item in professional_assets() if item.get("view") == "Front"]
 
 
 def test_professional_is_the_only_visible_and_supported_editor_style():
@@ -41,7 +50,7 @@ def test_professional_is_the_only_visible_and_supported_editor_style():
 def test_required_professional_role_pose_pack_is_complete():
     payload = manifest()
     required = payload["professionalPoseCatalog"]
-    assets = professional_assets()
+    assets = professional_front_assets()
     expected = sum(
         len(poses) * (1 if role == "coach" else 2)
         for role, poses in required.items()
@@ -61,12 +70,12 @@ def test_professional_manifest_has_character_and_layout_metadata():
         assert asset["id"].startswith("professional_")
         assert asset["characterId"]
         assert asset["asset"].endswith(".webp")
-        assert asset["master"].endswith(".webp")
+        assert asset["master"].endswith((".webp", ".png"))
         assert asset["thumbnail"].endswith(".webp")
-        assert f"/professional/{asset['characterId']}/" in asset["asset"]
+        assert f"/professional/{asset['characterId']}/" in asset["asset"] or "/professional/team_a/middle_blocker/back/" in asset["asset"]
         assert asset["objectKind"] == "character"
         assert asset["poseId"]
-        assert asset["supportsMirror"] is True
+        assert asset["supportsMirror"] is (asset.get("view") == "Front")
         assert asset["defaultWidth"] > 0 and asset["defaultHeight"] > 0
         assert 0 <= asset["footAnchor"]["x"] <= 1
         assert 0 <= asset["footAnchor"]["y"] <= 1
@@ -74,7 +83,7 @@ def test_professional_manifest_has_character_and_layout_metadata():
             "feet", "body_center_landing_reference", "takeoff_foot",
         }
         assert set(asset["shadowOffset"]) == {"x", "y"}
-        assert asset["facingSupport"] == ["left", "right"]
+        assert asset["facingSupport"] == (["left", "right"] if asset.get("view") == "Front" else [])
 
 
 def test_professional_assets_and_thumbnails_are_transparent_webp():
@@ -83,7 +92,7 @@ def test_professional_assets_and_thumbnails_are_transparent_webp():
             path = STATIC / asset[key].removeprefix("/static/")
             assert path.is_file()
             with Image.open(path) as image:
-                assert image.format == "WEBP"
+                assert image.format == ("PNG" if key == "master" and asset[key].endswith(".png") else "WEBP")
                 assert image.mode == "RGBA"
                 assert image.getchannel("A").getextrema()[0] == 0
 

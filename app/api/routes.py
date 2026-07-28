@@ -6,7 +6,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.models.schemas import Drill, Practice
+from app.models.notes import migrate_drill_document, migrate_practice_document
+from app.models.schemas import Drill, DrillPowerPointExport, PlayerFigurePowerPointExport, Practice, PracticePowerPointExport
+from app.services.pptx_export import create_drill_pptx, create_player_figure_exports, create_practice_pptx
 
 router = APIRouter(prefix="/api")
 
@@ -39,15 +41,20 @@ def list_assets(request: Request):
     return request.app.state.assets.manifest()
 
 
+@router.get("/assets/diagnostics")
+def asset_diagnostics(request: Request):
+    return request.app.state.assets.diagnostics
+
+
 @router.get("/drills")
 def list_drills(request: Request):
-    return [request.app.state.assets.migrate_drill(item) for item in request.app.state.drills.list()]
+    return [migrate_drill_document(request.app.state.assets.migrate_drill(item)) for item in request.app.state.drills.list()]
 
 
 @router.post("/drills", status_code=201)
 def create_drill(payload: Drill, request: Request):
     payload.modified_at = now()
-    data = request.app.state.assets.migrate_drill(payload.model_dump())
+    data = migrate_drill_document(request.app.state.assets.migrate_drill(payload.model_dump()))
     return request.app.state.drills.save(data)
 
 
@@ -56,7 +63,7 @@ def get_drill(drill_id: str, request: Request):
     item = safe_get(request.app.state.drills, drill_id)
     if item is None:
         raise HTTPException(404, "Drill not found")
-    return request.app.state.assets.migrate_drill(item)
+    return migrate_drill_document(request.app.state.assets.migrate_drill(item))
 
 
 @router.put("/drills/{drill_id}")
@@ -68,7 +75,7 @@ def update_drill(drill_id: str, payload: Drill, request: Request):
     data["id"] = drill_id
     data["created_at"] = current.get("created_at", data["created_at"])
     data["modified_at"] = now()
-    data = request.app.state.assets.migrate_drill(data)
+    data = migrate_drill_document(request.app.state.assets.migrate_drill(data))
     return request.app.state.drills.save(data)
 
 
@@ -77,7 +84,7 @@ def duplicate_drill(drill_id: str, request: Request):
     item = safe_get(request.app.state.drills, drill_id)
     if item is None:
         raise HTTPException(404, "Drill not found")
-    copy = request.app.state.assets.migrate_drill(deepcopy(item))
+    copy = migrate_drill_document(request.app.state.assets.migrate_drill(deepcopy(item)))
     copy["id"] = str(uuid4())
     copy["metadata"]["name"] = f'{copy["metadata"].get("name", "Untitled")} - Copy'
     copy["created_at"] = copy["modified_at"] = now()
@@ -92,13 +99,13 @@ def delete_drill(drill_id: str, request: Request):
 
 @router.get("/practices")
 def list_practices(request: Request):
-    return request.app.state.practices.list()
+    return [migrate_practice_document(item) for item in request.app.state.practices.list()]
 
 
 @router.post("/practices", status_code=201)
 def create_practice(payload: Practice, request: Request):
     payload.modified_at = now()
-    return request.app.state.practices.save(payload.model_dump())
+    return request.app.state.practices.save(migrate_practice_document(payload.model_dump()))
 
 
 @router.get("/practices/{practice_id}")
@@ -106,7 +113,7 @@ def get_practice(practice_id: str, request: Request):
     item = safe_get(request.app.state.practices, practice_id)
     if item is None:
         raise HTTPException(404, "Practice not found")
-    return item
+    return migrate_practice_document(item)
 
 
 @router.put("/practices/{practice_id}")
@@ -118,7 +125,7 @@ def update_practice(practice_id: str, payload: Practice, request: Request):
     data["id"] = practice_id
     data["created_at"] = current.get("created_at", data["created_at"])
     data["modified_at"] = now()
-    return request.app.state.practices.save(data)
+    return request.app.state.practices.save(migrate_practice_document(data))
 
 
 @router.post("/practices/{practice_id}/duplicate", status_code=201)
@@ -126,7 +133,7 @@ def duplicate_practice(practice_id: str, request: Request):
     item = safe_get(request.app.state.practices, practice_id)
     if item is None:
         raise HTTPException(404, "Practice not found")
-    copy = deepcopy(item)
+    copy = migrate_practice_document(deepcopy(item))
     copy["id"] = str(uuid4())
     copy["name"] = f'{copy.get("name", "Untitled")} - Copy'
     copy["created_at"] = copy["modified_at"] = now()
@@ -137,3 +144,60 @@ def duplicate_practice(practice_id: str, request: Request):
 def delete_practice(practice_id: str, request: Request):
     if not safe_delete(request.app.state.practices, practice_id):
         raise HTTPException(404, "Practice not found")
+
+
+def export_response(path):
+    return {"path": str(path), "filename": path.name}
+
+
+@router.post("/exports/powerpoint/drill")
+def export_current_drill_powerpoint(payload: DrillPowerPointExport, request: Request):
+    try:
+        drill = migrate_drill_document(request.app.state.assets.migrate_drill(payload.drill))
+        path = create_drill_pptx(drill, [frame.model_dump() for frame in payload.frames], request.app.state.exports_dir)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return export_response(path)
+
+
+@router.post("/drills/{drill_id}/export-powerpoint")
+def export_saved_drill_powerpoint(drill_id: str, payload: DrillPowerPointExport, request: Request):
+    item = safe_get(request.app.state.drills, drill_id)
+    if item is None:
+        raise HTTPException(404, "Drill not found")
+    try:
+        drill = migrate_drill_document(request.app.state.assets.migrate_drill(item))
+        path = create_drill_pptx(drill, [frame.model_dump() for frame in payload.frames], request.app.state.exports_dir)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return export_response(path)
+
+
+@router.post("/exports/powerpoint/practice")
+def export_practice_powerpoint(payload: PracticePowerPointExport, request: Request):
+    try:
+        practice = migrate_practice_document(payload.practice)
+        drills = [
+            {
+                "drill": migrate_drill_document(request.app.state.assets.migrate_drill(item.drill)),
+                "frames": [frame.model_dump() for frame in item.frames],
+            }
+            for item in payload.drills
+        ]
+        path = create_practice_pptx(practice, drills, request.app.state.exports_dir)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return export_response(path)
+
+
+@router.post("/exports/player-figures")
+@router.post("/exports/powerpoint/player-figures")
+def export_player_figures_powerpoint(payload: PlayerFigurePowerPointExport, request: Request):
+    try:
+        return create_player_figure_exports(
+            request.app.state.assets,
+            request.app.state.exports_dir,
+            payload.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

@@ -1,5 +1,9 @@
 # Visual asset library
 
+## Professional quality gate
+
+The Professional Character Library is governed by the mandatory standard in [PROFESSIONAL_CHARACTER_STANDARD.md](PROFESSIONAL_CHARACTER_STANDARD.md). Hidden or unfinished Professional candidates must not appear in the Court Editor, Asset Library, PNG export, or PowerPoint export. Keep rejected candidates hidden with `visibleInEditor: false` and a hidden `releaseStatus` until they meet the official benchmark.
+
 ## Inventory
 
 The manifest contains 166 local assets:

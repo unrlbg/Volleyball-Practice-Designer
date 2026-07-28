@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Volleyball Practice Designer</title>
-  <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/improvements.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=p0-interaction">
+  <link rel="stylesheet" href="/static/css/improvements.css?v=p0-interaction">
 </head>
 <body>
   <div id="toast" class="toast" aria-live="polite"></div>
@@ -57,11 +57,19 @@
                 <option value="workspace">Full workspace</option>
               </select>
               <button class="tool-btn wide" id="export-png">Export PNG</button>
+              <select id="pptx-export-scope" class="toolbar-select" aria-label="PowerPoint export scope">
+                <option value="frame">Current frame</option>
+                <option value="drill" selected>Current drill</option>
+                <option value="practice">Full practice</option>
+              </select>
+              <button class="tool-btn wide" id="export-pptx">Export PowerPoint</button>
               <select id="print-mode" class="toolbar-select" aria-label="Print mode">
                 <option value="per-court">One court per page</option>
                 <option value="all" selected>All courts landscape</option>
                 <option value="multi-page">Multi-page courts</option>
               </select>
+              <label class="toolbar-check"><input id="print-include-notes" type="checkbox" checked> Notes</label>
+              <label class="toolbar-check"><input id="print-hide-empty" type="checkbox" checked> Hide empty</label>
               <button class="tool-btn wide" id="print-drill">Print</button>
             </div>
           </div>
@@ -130,8 +138,40 @@
           </div>
         </section>
 
+        <aside class="coaching-notes-panel panel" id="coaching-notes-panel">
+          <button type="button" class="notes-vertical-tab" id="expand-notes-panel">Coaching Notes</button>
+          <div class="notes-panel-inner">
+            <div class="notes-panel-head">
+              <div>
+                <b>Coaching Notes</b>
+                <small id="notes-save-status">Saved with drill</small>
+              </div>
+              <button type="button" id="collapse-notes-panel">Collapse Notes</button>
+            </div>
+            <div class="notes-panel notes-main-panel">
+              <label>Drill Description<textarea id="note-description" rows="7"></textarea></label>
+              <details class="note-section" open>
+                <summary>Coaching Points</summary>
+                <div id="structured-notes"></div>
+              </details>
+              <label>General Comments<textarea id="note-generalComments" rows="9"></textarea></label>
+              <details class="note-section"><summary>Common Mistakes</summary><div id="note-section-commonMistakes"></div></details>
+              <details class="note-section"><summary>Progressions</summary><div id="note-section-progressions"></div></details>
+              <details class="note-section"><summary>Regressions</summary><div id="note-section-regressions"></div></details>
+              <details class="note-section"><summary>Variations</summary><div id="note-section-variations"></div></details>
+              <details class="note-section"><summary>Equipment Notes</summary><label>Equipment Notes<textarea id="note-equipmentNotes" rows="4"></textarea></label></details>
+              <details class="note-section"><summary>Post-Training Observations</summary><label>Post-Training Observations<textarea id="note-postTrainingObservations" rows="4"></textarea></label></details>
+            </div>
+          </div>
+        </aside>
+
         <aside class="right-panel panel">
-          <div class="panel-head"><b>Properties</b><small id="selection-summary">Nothing selected</small></div>
+          <div class="panel-head"><b id="right-panel-title">Properties</b><small id="selection-summary">Nothing selected</small></div>
+          <div class="right-tabs">
+            <button class="active" data-right-tab="properties">Properties</button>
+            <button data-right-tab="info">Drill Info</button>
+          </div>
+          <div id="right-tab-properties" class="right-tab-panel active">
           <div id="properties-empty" class="empty-state">
             <span>◇</span><p>Select an object on the court to edit its properties.</p>
           </div>
@@ -143,8 +183,10 @@
             </div>
             <div id="player-options">
               <label>Pose<select id="prop-pose"></select></label>
+              <label>Character View<select id="prop-character-view"><option>Front</option><option>3/4 Back Left</option><option>3/4 Back Right</option><option>Back</option><option>45° Back</option></select></label>
               <label>Facing direction<select id="prop-facing"><option>Right</option><option>Left</option></select></label>
             </div>
+            <div id="character-view-picker" class="variant-picker character-view-picker"></div>
             <div id="variant-picker" class="variant-picker"></div>
             <label id="object-court-label">Assigned court<select id="prop-court"></select></label>
             <fieldset id="court-object-properties" class="court-object-properties hidden">
@@ -178,6 +220,13 @@
             </div>
             <label>Opacity<input id="prop-opacity" type="range" min=".1" max="1" step=".05"></label>
             <label>Color<input id="prop-color" type="color"></label>
+            <div class="two-col" id="sticky-style-options">
+              <label>Background<input id="prop-bg-color" type="color"></label>
+              <label>Text size<input id="prop-text-size" type="number" min="10" max="36" step="1"></label>
+            </div>
+            <label>Object Note<textarea id="prop-note" rows="3" placeholder="Optional coaching comment for this object"></textarea></label>
+            <label class="check" id="prop-note-indicator-label"><input id="prop-note-indicator" type="checkbox" checked> Show note indicator</label>
+            <label class="check" id="prop-note-export-label"><input id="prop-note-export" type="checkbox"> Show object note in export / print</label>
             <label class="check" id="show-shadow-label"><input id="show-shadow" type="checkbox"> Show shadow</label>
             <div class="property-actions">
               <button type="button" id="flip-horizontal">⇋ Flip horizontal</button>
@@ -197,6 +246,11 @@
             <label class="check"><input id="show-grid" type="checkbox"> Court grid</label>
             <label class="check"><input id="show-antennas" type="checkbox" checked> Antennas</label>
             <label class="check"><input id="show-net" type="checkbox" checked> Net</label>
+          </div>
+          </div>
+          <div id="right-tab-info" class="right-tab-panel drill-info-panel">
+            <button type="button" class="btn ghost" id="open-drill-info">Open Drill Info</button>
+            <p>Use this tab for drill metadata. Detailed coaching content belongs in Coaching Notes.</p>
           </div>
         </aside>
       </div>
@@ -222,18 +276,36 @@
           <label>Practice name *<input id="practice-name" required placeholder="Tuesday: side-out focus"></label>
           <div class="two-col"><label>Date<input id="practice-date" type="date"></label><label>Team<input id="practice-team" placeholder="Senior Women"></label></div>
           <label>Main objective<input id="practice-objective" placeholder="First-ball side-out"></label>
-          <label>Notes<textarea id="practice-notes" rows="4"></textarea></label>
+          <div class="practice-tabs"><button type="button" class="active" data-practice-tab="timeline">Timeline</button><button type="button" data-practice-tab="notes">Practice Notes</button></div>
+          <div id="practice-tab-timeline" class="practice-tab-panel active">
+            <label>Notes<textarea id="practice-notes" rows="3"></textarea></label>
+          </div>
+          <div id="practice-tab-notes" class="practice-tab-panel">
+            <label>Main Practice Objective<textarea id="practice-note-mainObjective" rows="2"></textarea></label>
+            <label>Technical Objective<textarea id="practice-note-technicalObjective" rows="2"></textarea></label>
+            <label>Tactical Objective<textarea id="practice-note-tacticalObjective" rows="2"></textarea></label>
+            <label>Physical Objective<textarea id="practice-note-physicalObjective" rows="2"></textarea></label>
+            <label>Intensity<input id="practice-note-intensity" placeholder="Low / Medium / High"></label>
+            <label>Important Notes<textarea id="practice-note-importantNotes" rows="3"></textarea></label>
+            <label>General Practice Comments<textarea id="practice-note-generalComments" rows="4"></textarea></label>
+            <label>Post-Practice Review<textarea id="practice-note-postPracticeReview" rows="4"></textarea></label>
+          </div>
           <button type="button" class="btn ghost" id="new-practice">Clear / New</button>
         </form>
         <section class="form-card practice-plan"><div class="plan-head"><div><h2>Practice timeline</h2><p>Choose “Add to practice” in the Drill Library.</p></div><b id="practice-total">0 min</b></div><div id="practice-items"></div></section>
       </div>
-      <h2 class="section-title">Saved practices</h2><div id="practice-grid" class="card-grid"></div>
+      <h2 class="section-title">Saved practices</h2>
+      <div class="library-tools"><input id="practice-search" placeholder="Search practice objectives, notes or comments"></div>
+      <div id="practice-grid" class="card-grid"></div>
     </section>
 
     <section id="view-assets" class="view page asset-review">
       <div class="page-heading compact">
         <div><p class="eyebrow">Visual review</p><h1>Asset Library</h1><p>Review every local player pose and equipment variant before using it in drills.</p></div>
-        <div class="asset-summary" id="asset-summary"></div>
+        <div class="asset-heading-actions">
+          <div class="asset-summary" id="asset-summary"></div>
+          <button class="btn primary" id="export-player-figures">Export Player Figures</button>
+        </div>
       </div>
       <div class="library-tools">
         <input id="asset-search" placeholder="Search role, pose, team or equipment…">
@@ -244,13 +316,36 @@
           <option value="ball">Balls</option>
           <option value="equipment">Equipment</option>
         </select>
+        <select id="asset-style">
+          <option value="professional" selected>Professional</option>
+          <option value="">All visual styles</option>
+          <option value="semi_realistic">Semi-realistic</option>
+        </select>
         <select id="asset-team">
           <option value="">All teams</option>
           <option value="A">Team A</option>
           <option value="B">Team B</option>
           <option value="Neutral">Coach / Neutral</option>
         </select>
+        <select id="asset-role">
+          <option value="">All roles</option>
+          <option value="setter">Setter</option>
+          <option value="outside">Outside</option>
+          <option value="opposite">Opposite</option>
+          <option value="middle">Middle Blocker</option>
+          <option value="libero">Libero</option>
+          <option value="coach">Coach</option>
+        </select>
+        <select id="asset-view">
+          <option value="">All character views</option>
+          <option value="Front">Front</option>
+          <option value="Back">Back</option>
+          <option value="3/4 Back Left">3/4 Back Left</option>
+          <option value="3/4 Back Right">3/4 Back Right</option>
+          <option value="45° Back">45° Back</option>
+        </select>
       </div>
+      <div id="asset-diagnostics" class="asset-diagnostics"></div>
       <div id="asset-grid" class="asset-grid"></div>
     </section>
   </main>
@@ -278,7 +373,37 @@
       <div class="dialog-actions"><button value="cancel" class="btn ghost">Cancel</button><button id="apply-meta" value="default" class="btn primary">Apply details</button></div>
     </form>
   </dialog>
-  <script src="/static/js/interaction.js"></script>
-  <script src="/static/js/app.js"></script>
+  <dialog id="player-figure-export-dialog">
+    <form method="dialog" id="player-figure-export-form">
+      <div class="dialog-head"><div><p class="eyebrow">Figure export</p><h2>Export Player Figures</h2></div><button value="cancel" aria-label="Close">×</button></div>
+      <div class="dialog-grid player-figure-export-grid">
+        <fieldset class="span-2 export-fieldset">
+          <legend>Player selection</legend>
+          <label><input type="radio" name="player-figure-selection" value="all" checked> All figures</label>
+          <label><input type="radio" name="player-figure-selection" value="setter"> Setter</label>
+          <label><input type="radio" name="player-figure-selection" value="outside"> Outside</label>
+          <label><input type="radio" name="player-figure-selection" value="opposite"> Opposite</label>
+          <label><input type="radio" name="player-figure-selection" value="middle"> Middle</label>
+          <label><input type="radio" name="player-figure-selection" value="libero"> Libero</label>
+          <label><input type="radio" name="player-figure-selection" value="coach"> Coach</label>
+          <label><input type="radio" name="player-figure-selection" value="selected"> Selected figures only</label>
+        </fieldset>
+        <fieldset class="span-2 export-fieldset">
+          <legend>Format</legend>
+          <label><input type="radio" name="player-figure-format" value="pptx" checked> PowerPoint (.pptx)</label>
+          <label><input type="radio" name="player-figure-format" value="png"> PNG pack</label>
+          <label><input type="radio" name="player-figure-format" value="both"> Both</label>
+        </fieldset>
+        <div class="span-2 export-result hidden" id="player-figure-export-result">
+          <b>Export complete</b>
+          <p id="player-figure-export-path"></p>
+          <button type="button" class="btn ghost" id="open-player-figure-folder">Open export folder</button>
+        </div>
+      </div>
+      <div class="dialog-actions"><button value="cancel" class="btn ghost">Cancel</button><button id="run-player-figure-export" value="default" class="btn primary">Export</button></div>
+    </form>
+  </dialog>
+  <script src="/static/js/interaction.js?v=p0-interaction"></script>
+  <script src="/static/js/app.js?v=p0-interaction"></script>
 </body>
 </html>

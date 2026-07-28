@@ -109,7 +109,7 @@ def test_legacy_migration_preserves_all_transform_and_membership_fields():
 
 def test_team_and_pose_changes_cannot_change_visual_style():
     source = APP_JS.read_text(encoding="utf-8")
-    assert 'if (["team", "role", "pose"].includes(key) && isCharacter(o))' in source
+    assert 'if (["team", "role", "pose", "characterView"].includes(key) && isCharacter(o))' in source
     assert 'o.visualStyle = "professional"' in source
     assert 'exact("legacy_vector")' not in source
     assert 'return exact("legacy_vector")' not in source
